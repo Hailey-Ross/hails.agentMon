@@ -1,14 +1,18 @@
-//! agentMon: a small always-available desktop widget that shows what every Claude Code session is
-//! doing. The hive UI (index.html, board.js, board.css, fonts) and the data script (agentmon.ps1)
-//! are built into the exe; data lives in %LOCALAPPDATA%\agentMon.
+//! agentMon: a small always-available desktop widget that shows what every AI agent on the PC is doing.
+//! The hive UI (index.html, board.js, board.css, fonts) is built into the exe; settings and window
+//! position live in %LOCALAPPDATA%\agentMon. Everything that collects data is native Rust:
 //!
-//! Two tiers feed the page: the live tier (live.rs, native, every second: open sessions, their work,
-//! the kitten) is pushed straight into the page; the data script (every minute: git, PRs, titles,
-//! where you left off) writes board-data.js and the page is told to reload it.
+//! - live.rs, every second: open Claude Code sessions, their sub-agents, the work running under each,
+//!   other agent tools, background jobs, the kitten, and the build gate (gate.rs);
+//! - scan.rs, every minute: projects, recent sessions, git, PRs and CI, where you left off.
+//!
+//! Both are pushed straight into the page (no files, no polling).
 #![windows_subsystem = "windows"]
 
 mod focus;
+mod gate;
 mod live;
+mod scan;
 mod update;
 
 use std::borrow::Cow;
@@ -28,12 +32,11 @@ use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy};
 use tao::platform::windows::IconExtWindows;
 use tao::window::{Icon, ResizeDirection, UserAttentionType, Window, WindowBuilder};
 use wry::http::{header::CONTENT_TYPE, Request, Response, StatusCode};
-use wry::{WebContext, WebViewBuilder};
+use wry::{MemoryUsageLevel, WebContext, WebViewBuilder, WebViewBuilderExtWindows, WebViewExtWindows};
 
 const INDEX: &str = include_str!("../index.html");
 const BOARD_JS: &str = include_str!("../board.js");
 const BOARD_CSS: &str = include_str!("../board.css");
-const DATA_SCRIPT: &str = include_str!("../agentmon.ps1");
 const FONTS: [(&str, &[u8]); 3] = [
     ("/fonts/bricolage-grotesque-latin.woff2", include_bytes!("../fonts/bricolage-grotesque-latin.woff2")),
     ("/fonts/figtree-latin.woff2", include_bytes!("../fonts/figtree-latin.woff2")),
@@ -45,7 +48,6 @@ const LIVE_EVERY: Duration = Duration::from_millis(1000);
 const UPDATE_EVERY: Duration = Duration::from_secs(6 * 3600);
 const SAVE_DELAY: Duration = Duration::from_millis(600);
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x0000_4000;
 
 enum UserEvent {
     Drag,
@@ -56,8 +58,10 @@ enum UserEvent {
     Size(f64, f64),
     /// A live-tier snapshot (JSON) for the page.
     Live(String),
-    /// The data script wrote a new board-data.js.
-    DataReady,
+    /// A slow-tier scan (JSON) for the page.
+    Slow(String),
+    /// The page has loaded and wants the latest data.
+    Ready,
     /// Whether a session's window could be brought to the front.
     Focused(bool),
     /// Flash the taskbar button (the page decides when).
@@ -81,29 +85,32 @@ fn data_dir() -> PathBuf {
     base.join("agentMon")
 }
 
-/// Runs the data script now, then every minute, or sooner when the page asks through `wake`.
-fn start_refresher(dir: PathBuf, wake: mpsc::Receiver<()>, proxy: EventLoopProxy<UserEvent>) {
-    let script = dir.join("agentmon.ps1");
-    if fs::read_to_string(&script).ok().as_deref() != Some(DATA_SCRIPT) {
-        let _ = fs::write(&script, DATA_SCRIPT);
-    }
-    thread::spawn(move || loop {
-        let ok = Command::new("powershell.exe")
-            .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File"])
-            .arg(&script)
-            .arg("-OutDir")
-            .arg(&dir)
-            .creation_flags(CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS)
-            .status()
-            .is_ok_and(|s| s.success());
-        if ok && proxy.send_event(UserEvent::DataReady).is_err() {
+/// Scans now, then every minute, or sooner when the page asks through `wake`.
+fn start_scanner(wake: mpsc::Receiver<()>, proxy: EventLoopProxy<UserEvent>) {
+    thread::spawn(move || {
+        // First paint: the last scan saved on disk at once, then a quick scan (no GitHub), then full scans.
+        let saved = data_dir().join("last-scan.json");
+        if let Ok(text) = fs::read_to_string(&saved) {
+            if serde_json::from_str::<Value>(&text).is_ok() && proxy.send_event(UserEvent::Slow(text)).is_err() {
+                return;
+            }
+        }
+        let mut scanner = scan::Scanner::new();
+        if proxy.send_event(UserEvent::Slow(scanner.scan_quick().to_string())).is_err() {
             return;
         }
-        // Several quick wake-ups in a row (sessions opening) collapse into one run.
-        match wake.recv_timeout(REFRESH_EVERY) {
-            Ok(()) => while wake.try_recv().is_ok() {},
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-            Err(mpsc::RecvTimeoutError::Disconnected) => return,
+        loop {
+            let data = scanner.scan().to_string();
+            let _ = fs::write(&saved, &data);
+            if proxy.send_event(UserEvent::Slow(data)).is_err() {
+                return;
+            }
+            // Several quick wake-ups in a row (sessions opening) collapse into one run.
+            match wake.recv_timeout(REFRESH_EVERY) {
+                Ok(()) => while wake.try_recv().is_ok() {},
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => return,
+            }
         }
     });
 }
@@ -172,15 +179,11 @@ fn app_icon() -> Option<Icon> {
     Icon::from_resource(1, None).ok()
 }
 
-fn serve(dir: &Path, req: &Request<Vec<u8>>) -> Response<Cow<'static, [u8]>> {
+fn serve(req: &Request<Vec<u8>>) -> Response<Cow<'static, [u8]>> {
     let (body, mime): (Cow<'static, [u8]>, &str) = match req.uri().path() {
         "/" | "/index.html" => (Cow::Borrowed(INDEX.as_bytes()), "text/html; charset=utf-8"),
         "/board.js" => (Cow::Borrowed(BOARD_JS.as_bytes()), "text/javascript; charset=utf-8"),
         "/board.css" => (Cow::Borrowed(BOARD_CSS.as_bytes()), "text/css; charset=utf-8"),
-        "/board-data.js" => match fs::read(dir.join("board-data.js")) {
-            Ok(b) => (Cow::Owned(b), "text/javascript; charset=utf-8"),
-            Err(_) => (Cow::Borrowed(&b"window.BOARD_DATA = window.BOARD_DATA || null;"[..]), "text/javascript"),
-        },
         p => match FONTS.iter().find(|(n, _)| *n == p) {
             Some((_, b)) => (Cow::Borrowed(*b), "font/woff2"),
             None => return Response::builder().status(StatusCode::NOT_FOUND).body(Cow::Borrowed(&b""[..])).unwrap(),
@@ -217,7 +220,7 @@ fn main() {
 
     let (wake_tx, wake_rx) = mpsc::channel::<()>();
     let (update_tx, update_rx) = mpsc::channel::<()>();
-    start_refresher(dir.clone(), wake_rx, proxy.clone());
+    start_scanner(wake_rx, proxy.clone());
     start_live(proxy.clone());
     start_updater(proxy.clone(), update_rx);
 
@@ -249,15 +252,22 @@ fn main() {
     let window = wb.build(&event_loop).expect("agentMon: could not open its window");
 
     let mut web_context = WebContext::new(Some(dir.join("webview")));
-    let serve_dir = dir.clone();
     let ipc_proxy = proxy.clone();
     let webview = WebViewBuilder::new_with_web_context(&mut web_context)
+        // A lean WebView2: one renderer, no background networking, sync, updates, extensions or translate.
+        .with_additional_browser_args(
+            "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,Translate,OptimizationHints,MediaRouter,AutofillServerCommunication \
+             --disable-background-networking --disable-component-update --disable-sync --disable-default-apps --disable-extensions \
+             --no-first-run --renderer-process-limit=1 --disk-cache-size=1048576 --js-flags=--max-old-space-size=64",
+        )
+        .with_browser_accelerator_keys(false)
+        .with_default_context_menus(false)
         .with_background_color((20, 16, 10, 255))
         .with_initialization_script(&format!(
             "window.AGENTMON_APP = true; window.AGENTMON_PINNED = {pinned}; window.AGENTMON_VERSION = {};",
             js_str(&update::label())
         ))
-        .with_custom_protocol("agentmon".into(), move |_id, req| serve(&serve_dir, &req))
+        .with_custom_protocol("agentmon".into(), move |_id, req| serve(&req))
         .with_ipc_handler(move |req: Request<String>| {
             let msg = req.body().as_str();
             let ev = match msg {
@@ -273,6 +283,7 @@ fn main() {
                     None
                 }
                 "update-now" => Some(UserEvent::UpdateNow),
+                "ready" => Some(UserEvent::Ready),
                 "refresh" => {
                     let _ = wake_tx.send(());
                     None
@@ -302,6 +313,7 @@ fn main() {
     let mut lock = Some(lock);
     let mut hidden = false;
     let mut last_live: Option<String> = None;
+    let mut last_slow: Option<String> = None;
     event_loop.run(move |event, _, control_flow| {
         let js = |code: String| {
             let _ = webview.evaluate_script(&code);
@@ -314,7 +326,12 @@ fn main() {
                 if now_hidden != hidden {
                     hidden = now_hidden;
                     let _ = webview.set_visible(!hidden);
+                    // While minimized WebView2 may drop caches and trim its memory.
+                    let _ = webview.set_memory_usage_level(if hidden { MemoryUsageLevel::Low } else { MemoryUsageLevel::Normal });
                     if !hidden {
+                        if let Some(s) = &last_slow {
+                            js(format!("window.agentMonSlow && window.agentMonSlow({s})"));
+                        }
                         if let Some(s) = &last_live {
                             js(format!("window.agentMonLive && window.agentMonLive({s})"));
                         }
@@ -331,6 +348,8 @@ fn main() {
             }
             Event::WindowEvent { event: WindowEvent::CloseRequested, .. } | Event::UserEvent(UserEvent::Close) => {
                 save_state(&state_path, &mut state, &window);
+                // Never leave a build paused behind.
+                gate::resume_leftovers();
                 *control_flow = ControlFlow::Exit;
                 return;
             }
@@ -365,9 +384,18 @@ fn main() {
                 }
                 last_live = Some(snapshot);
             }
-            Event::UserEvent(UserEvent::DataReady) => {
+            Event::UserEvent(UserEvent::Slow(data)) => {
                 if !hidden {
-                    js("window.agentMonReload && window.agentMonReload()".into());
+                    js(format!("window.agentMonSlow && window.agentMonSlow({data})"));
+                }
+                last_slow = Some(data);
+            }
+            Event::UserEvent(UserEvent::Ready) => {
+                if let Some(s) = &last_slow {
+                    js(format!("window.agentMonSlow && window.agentMonSlow({s})"));
+                }
+                if let Some(s) = &last_live {
+                    js(format!("window.agentMonLive && window.agentMonLive({s})"));
                 }
             }
             Event::UserEvent(UserEvent::Focused(ok)) => js(format!("window.agentMonFocused && window.agentMonFocused({ok})")),
@@ -383,6 +411,7 @@ fn main() {
                 match update::swap_in() {
                     Ok(exe) => {
                         // Let go of the single-instance lock, start the new exe, leave.
+                        gate::resume_leftovers();
                         drop(lock.take());
                         let _ = Command::new(exe).spawn();
                         *control_flow = ControlFlow::Exit;

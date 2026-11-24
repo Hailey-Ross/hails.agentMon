@@ -93,7 +93,7 @@ svg.ic { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-wid
 .chip { display: inline-flex; align-items: center; gap: 8px; height: 32px; padding: 0 13px 0 11px; border-radius: 99px; background: color-mix(in oklab, var(--surface) 85%, transparent);
   border: 1px solid var(--line); font-size: 12.5px; color: var(--fg-2); white-space: nowrap; }
 .chip b { color: var(--fg); font-weight: 600; }
-.beat { width: 9px; height: 9px; clip-path: var(--hexv); background: var(--honey); animation: beat 2.4s infinite; }
+.beat { width: 9px; height: 9px; clip-path: var(--hexv); background: var(--honey); }
 .beat.stale { background: var(--warn); animation: none; }
 @keyframes beat { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.35); opacity: 0.6; } }
 
@@ -101,63 +101,111 @@ svg.ic { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-wid
 .page { max-width: 1340px; margin: 0 auto; }
 
 /* Hero: the hive. Each open session owns a cell: a working session's cell is under construction (walls
-   drawn in, honey filling and settling, never quite done); an idle one is finished and capped; when the
-   session goes back to work its bee flies to a new cell and the finished one stays as part of the hive.
-   Every cell and bee runs on its own traits (pace, phase, path), so nothing moves in step. */
+   going in a stretch at a time, honey rising in steps, never quite done); an idle one is finished and capped;
+   when the session goes back to work its bee flies to a new cell and the finished one stays in the hive.
+   Every cell and bee runs on its own traits (pace, phase, path), so nothing moves in step.
+   Lean drawing: the comb and capped cells are one static picture; every live cell, bee and flying bee is
+   its own small layer. Bees, flights, hover, wobble and pops move layers on the GPU (no redraw); only the
+   wings (two-frame flaps) and the construction steps redraw, and only their own small layer. */
 .hero { position: relative; height: 230px; border-radius: 28px; overflow: hidden; isolation: isolate; box-shadow: var(--shadow); border: 1px solid var(--line);
   background: radial-gradient(90% 140% at 100% 0%, var(--hero-b), transparent 70%), linear-gradient(120deg, var(--hero-a), color-mix(in oklab, var(--hero-a) 60%, var(--hero-b))); }
-.hero svg.hive { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
-.hive .comb-layer { transform: translate(calc(var(--px, 0) * -10px), calc(var(--py, 0) * -6px)); transition: transform 0.9s var(--ease); }
+.hero svg.hive-bg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.hive-fly { position: absolute; inset: 0; pointer-events: none; z-index: 2; }
+/* The hive is one canvas (board.js draws it with its own frame budget). */
+.hivecv { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.flyer { position: absolute; left: 0; top: 0; will-change: transform; }
+/* Live cells, placed with the background's mapping (--s, --ox, --oy set by board.js). */
+.hive-cells { position: absolute; inset: 0; z-index: 1; }
+.cellbox { position: absolute; width: calc(120px * var(--s, 1)); height: calc(120px * var(--s, 1));
+  left: calc(var(--ox, 0) * 1px + (var(--cx) - 60) * var(--s, 1) * 1px); top: calc(var(--oy, 0) * 1px + (var(--cy) - 60) * var(--s, 1) * 1px); }
+.cellbox .cellsvg { position: relative; z-index: 1; width: 100%; height: 100%; display: block; overflow: visible; transition: transform 0.45s var(--spring); }
+.cellbox[data-pid]:not([data-pid=""]) { cursor: pointer; }
+.cellbox[data-pid]:not([data-pid=""]):hover .cellsvg { transform: translateY(-4px) scale(1.07); }
+.cellbox.pressed .cellsvg { transform: scale(0.93); transition-duration: 0.12s; }
+.cellbox.just .cellsvg { animation: finish 0.9s var(--spring); }
+@keyframes finish { 0% { transform: scale(0.86); } 55% { transform: scale(1.12); } 100% { transform: scale(1); } }
+.cellbox.asks .cellsvg { animation: wobble ease-in-out infinite; }
+@keyframes wobble { 0%, 70%, 100% { transform: rotate(0); } 76% { transform: rotate(-5deg); } 84% { transform: rotate(4deg); } 92% { transform: rotate(-2deg); } }
+.cellbox.enter .cellsvg { animation: born 0.7s var(--spring); }
+@keyframes born { from { transform: scale(0.2); opacity: 0; } }
+.cellbox.enter { animation: none; }
+
+.hive .guide { fill: color-mix(in oklab, var(--cell) 60%, transparent); stroke: var(--cell-line); stroke-width: 1.4; stroke-dasharray: 3 4; }
 .hive .comb-layer path { fill: var(--cell); stroke: var(--cell-line); stroke-width: 1.5; }
-.hive .cell { cursor: default; }
-.hive .cell[data-pid] { cursor: pointer; }
-.hive .lift { transition: transform 0.45s var(--spring); }
-.hive .cell[data-pid]:hover .lift { transform: translateY(-4px) scale(1.07); }
-.hive .cell.pressed .lift { transform: scale(0.93); transition-duration: 0.12s; }
 .hive .wall { fill: var(--cell); stroke: var(--cell-line); stroke-width: 2.2; stroke-linejoin: round; }
-.hive .cell-name { font: 700 10.5px var(--font-body); fill: var(--fg); paint-order: stroke; stroke: color-mix(in oklab, var(--hero-a) 70%, transparent); stroke-width: 3px; }
+.hive .cell-name { font: 700 10.5px var(--font-body); fill: #2b1a00; paint-order: stroke; stroke: rgba(255, 236, 176, 0.85); stroke-width: 3px; }
 .hive .mark { font-weight: 800; }
 .hive .mark.ok { font-size: 18px; fill: var(--ready); }
 .hive .mark.ask { font-size: 24px; fill: var(--bad); }
 
-/* Under construction: the walls go in a stretch at a time and never close; the honey rises and settles. */
-.hive .cell.busy .wall { fill: transparent; stroke: var(--honey); stroke-width: 3; stroke-dasharray: 100; animation: build-0 linear infinite; }
+/* Liquid honey: a layer clipped to the cell's hexagon (flat-top, radius 40 of the 120-unit box). Its level is the
+   session's progress (set by board.js, never full) and glides when it changes; inside, the honey sloshes (tilts and
+   bobs) and its surface waves, each cell on its own rhythm, looping smoothly. All GPU moves, no redraws. */
+.honeycell { position: absolute; inset: 0; pointer-events: none;
+  clip-path: polygon(16.7% 50%, 33.3% 21.1%, 66.7% 21.1%, 83.3% 50%, 66.7% 78.9%, 33.3% 78.9%); }
+.honey-liquid { position: absolute; left: 0; right: 0; top: 0; height: 100%; transition: transform 1.8s cubic-bezier(0.33, 1, 0.68, 1); will-change: transform; }
+.honey-slosh { position: absolute; left: -30%; width: 160%; top: 0; height: 130%; transform-origin: 50% 0; will-change: transform;
+  animation: slosh-0 ease-in-out infinite alternate; }
+.honey-slosh.slosh-1 { animation-name: slosh-1; } .honey-slosh.slosh-2 { animation-name: slosh-2; }
+@keyframes slosh-0 { 0% { transform: translateY(-2%) rotate(-3deg); } 50% { transform: translateY(1.5%) rotate(1deg); } 100% { transform: translateY(-1%) rotate(3.5deg); } }
+@keyframes slosh-1 { 0% { transform: translateY(1%) rotate(2.5deg); } 35% { transform: translateY(-2%) rotate(-1.5deg); } 100% { transform: translateY(0.5%) rotate(-4deg); } }
+@keyframes slosh-2 { 0% { transform: translateY(-1%) rotate(-1deg); } 60% { transform: translateY(2%) rotate(3deg); } 100% { transform: translateY(-2%) rotate(-2.5deg); } }
+.honey-body { position: absolute; left: 0; right: 0; top: 2.5px; bottom: 0; background: linear-gradient(#ffd36b 0, #f4b334 22%, #e09a12 70%); }
+.honey-wave { position: absolute; left: 0; width: 200%; top: -3px; height: 6px; will-change: transform; animation: wave linear infinite;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='6' viewBox='0 0 32 6'%3E%3Cpath d='M0 3 Q8 0.5 16 3 T32 3 V6 H0Z' fill='%23ffd36b'/%3E%3C/svg%3E") repeat-x;
+  background-size: 32px 6px; }
+@keyframes wave { from { transform: translateX(0); } to { transform: translateX(-32px); } }
+/* Idle: the honey rests and moves slowly. Stuck: it stops and dulls. */
+.cellbox.ready .honey-slosh, .cellbox.asks .honey-slosh { animation-duration: 9s !important; }
+.cellbox.ready .honey-wave, .cellbox.asks .honey-wave { animation-duration: 7s !important; }
+.cellbox.stuck .honey-slosh, .cellbox.stuck .honey-wave { animation-play-state: paused; }
+.cellbox.stuck .honeycell { filter: saturate(0.5) brightness(0.8); }
+.hive .cell .guide { fill: none; }
+.hive .honey-rest { fill: url(#honeyFill); opacity: 0.8; }
+
+/* Under construction: the walls grow and settle around the cell and never quite close (smooth; each cell is a
+   small layer of its own, so this redraws only that cell). */
+.hive .cell.busy .wall { fill: transparent; stroke: var(--honey); stroke-width: 3; stroke-dasharray: 100; animation: build-0 ease-in-out infinite; }
 .hive .cell.busy .wall.build-1 { animation-name: build-1; } .hive .cell.busy .wall.build-2 { animation-name: build-2; }
 @keyframes build-0 { 0% { stroke-dashoffset: 96; } 22% { stroke-dashoffset: 62; } 38% { stroke-dashoffset: 58; } 61% { stroke-dashoffset: 21; } 74% { stroke-dashoffset: 26; } 92% { stroke-dashoffset: 7; } 100% { stroke-dashoffset: 12; } }
 @keyframes build-1 { 0% { stroke-dashoffset: 92; } 15% { stroke-dashoffset: 80; } 33% { stroke-dashoffset: 47; } 49% { stroke-dashoffset: 49; } 70% { stroke-dashoffset: 15; } 86% { stroke-dashoffset: 9; } 100% { stroke-dashoffset: 18; } }
 @keyframes build-2 { 0% { stroke-dashoffset: 98; } 30% { stroke-dashoffset: 70; } 45% { stroke-dashoffset: 34; } 58% { stroke-dashoffset: 37; } 80% { stroke-dashoffset: 5; } 100% { stroke-dashoffset: 14; } }
-.hive .honey { fill: url(#honeyFill); opacity: 0.85; transform-box: fill-box; transform-origin: 50% 100%; animation: honey ease-in-out infinite alternate; }
-@keyframes honey { 0% { transform: scaleY(0.08); } 35% { transform: scaleY(0.36); } 55% { transform: scaleY(0.3); } 100% { transform: scaleY(0.82); } }
+/* The honey fills the inside of the cell from the center out, in steps, and settles back a little: never quite full. */
+.hive .honey { fill: url(#honeyFill); opacity: 0.9; transform-box: fill-box; transform-origin: 50% 50%; animation: honey steps(4, end) infinite alternate; }
+@keyframes honey { 0% { transform: scale(0.16); } 30% { transform: scale(0.5); } 45% { transform: scale(0.42); } 75% { transform: scale(0.8); } 100% { transform: scale(0.9); } }
 
 /* Finished: walls closed, honey to the brim and capped with wax. A capped cell left behind stays a little dimmer. */
-.hive .wall.done, .hive .cell.capped .wall { fill: url(#honeyFill); stroke: var(--honey); stroke-width: 2.4; }
+.hive .wall.done, .hive .cell.capped .wall { fill: none; stroke: var(--honey); stroke-width: 2.4; }
 .hive .cap-line { fill: color-mix(in oklab, var(--wax-cap) 70%, transparent); stroke: color-mix(in oklab, var(--honey) 50%, transparent); stroke-width: 1.2; }
 .hive .cell.capped { opacity: 0.62; }
-.hive .cell.capped .lift { transition: none; }
 .hive .cell.ready .wall.done { stroke: var(--ready); }
-.hive .cell.just .lift { animation: finish 0.9s var(--spring); }
-@keyframes finish { 0% { transform: scale(0.86); } 55% { transform: scale(1.12); } 100% { transform: scale(1); } }
-.hive .cell.asks .lift { animation: wobble ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
-@keyframes wobble { 0%, 70%, 100% { transform: rotate(0); } 76% { transform: rotate(-5deg); } 84% { transform: rotate(4deg); } 92% { transform: rotate(-2deg); } }
-.hive .cell.born .lift { animation: born 0.7s var(--spring); }
-@keyframes born { from { transform: scale(0.2); opacity: 0; } }
 
-/* Bees: each on its own path (four kinds), pace and phase. */
-.hive .bee { animation: buzz-0 ease-in-out infinite; }
-.hive .bee.buzz-1 { animation-name: buzz-1; } .hive .bee.buzz-2 { animation-name: buzz-2; } .hive .bee.buzz-3 { animation-name: buzz-3; }
+/* Bees: each its own layer, on its own path (four kinds), pace and phase. */
+.beebox { position: absolute; z-index: 2; left: 36.5%; top: 31%; width: 27%; height: 22%; pointer-events: none; transition: opacity 0.35s; }
+.beebox.landing { opacity: 0; }
+.bee { width: 100%; height: 100%; animation: buzz-0 ease-in-out infinite; will-change: transform; }
+.bee.buzz-1 { animation-name: buzz-1; } .bee.buzz-2 { animation-name: buzz-2; } .bee.buzz-3 { animation-name: buzz-3; }
 @keyframes buzz-0 { 0%, 100% { transform: translate(-9px, 2px) rotate(-8deg); } 25% { transform: translate(6px, -7px) rotate(10deg); } 50% { transform: translate(10px, 4px) rotate(4deg); } 75% { transform: translate(-4px, 8px) rotate(-12deg); } }
 @keyframes buzz-1 { 0%, 100% { transform: translate(0, 0) rotate(0); } 18% { transform: translate(-11px, -4px) rotate(-14deg); } 47% { transform: translate(-3px, 7px) rotate(6deg); } 63% { transform: translate(9px, -2px) rotate(12deg); } 81% { transform: translate(4px, -9px) rotate(-4deg); } }
 @keyframes buzz-2 { 0%, 100% { transform: translate(5px, 3px) rotate(6deg); } 33% { transform: translate(-7px, -8px) rotate(-10deg); } 66% { transform: translate(-10px, 6px) rotate(-3deg); } }
 @keyframes buzz-3 { 0%, 100% { transform: translate(-2px, -6px) rotate(-4deg); } 12% { transform: translate(8px, -6px) rotate(8deg); } 29% { transform: translate(10px, 5px) rotate(14deg); } 54% { transform: translate(-6px, 9px) rotate(-8deg); } 77% { transform: translate(-12px, -1px) rotate(-16deg); } }
-.hive .bee-body { animation: jitter ease-in-out infinite alternate; }
-.hive .cell[data-pid]:hover .bee-body { animation-duration: 0.12s !important; }
-.hive .wing, .mini-bee .wing { fill: rgba(255, 255, 255, 0.78); stroke: rgba(60, 40, 0, 0.35); stroke-width: 0.8; transform-box: fill-box; transform-origin: bottom center; animation: flap linear infinite alternate; }
-@keyframes flap { from { transform: scaleY(1); } to { transform: scaleY(0.3); } }
+.bee-jit { width: 100%; height: 100%; animation: jitter ease-in-out infinite alternate; }
+.bee-svg { width: 100%; height: 100%; display: block; overflow: visible; }
+.cellbox[data-pid]:hover .bee-jit { animation-duration: 0.12s !important; }
+/* Wings flap as two frames (open, closed) at each bee's own rate: a few small redraws, not sixty. */
+.bee-svg .wing, .mini-bee .wing { fill: rgba(255, 255, 255, 0.78); stroke: rgba(60, 40, 0, 0.35); stroke-width: 0.8; transform-box: fill-box; transform-origin: bottom center; animation: flap ease-in-out infinite alternate; }
+@keyframes flap { from { transform: scaleY(1); } to { transform: scaleY(0.35); } }
 @keyframes jitter { to { transform: translate(0.8px, -1.2px); } }
-/* A bee that just flew in from its old cell appears once the flight lands. */
-.hive .bee-spot.landing { opacity: 0; }
-.hive .bee-spot { transition: opacity 0.35s; }
-.hive .flyer { pointer-events: none; }
+/* Worker bees: one small bee per live sub-agent, helping in its session's cell. */
+.beebox.worker { width: 17%; height: 14%; }
+.beebox.w0 { left: 16%; top: 50%; } .beebox.w1 { left: 66%; top: 47%; } .beebox.w2 { left: 42%; top: 60%; }
+.said.sub .who { color: var(--busy); }
+/* Stuck: the bee slows and droops, the honey stops. */
+.cellbox.stuck .bee { animation-duration: 11s !important; }
+.cellbox.stuck .bee-jit { transform: rotate(18deg) translateY(3px); animation: none; }
+.cellbox.stuck .wing { animation-duration: 0.6s !important; }
+.cellbox.stuck .hive .wall { stroke: var(--bad) !important; }
+.cellbox.stuck .honey { animation-play-state: paused; opacity: 0.55; }
 
 .hello { position: absolute; left: 28px; top: 24px; z-index: 2; pointer-events: none; max-width: 46%; }
 .hello h1 { font: 750 clamp(28px, 3.4vw, 40px)/1.05 var(--font-display); letter-spacing: -0.03em; }
@@ -250,11 +298,17 @@ a.row:hover { background: var(--surface-3); transform: translateX(2px); }
 .said.stuckline.bad { color: var(--bad); }
 .said.stuckline.bad .who { color: var(--bad); }
 .row.stuck { --tone: var(--bad); background: color-mix(in oklab, var(--bad) 7%, var(--surface-2)); }
-.hive .cell.stuck .wall { stroke: var(--bad) !important; }
-.hive .cell.stuck .honey { animation-play-state: paused; opacity: 0.55; }
-.hive .cell.stuck .bee { animation-duration: 11s !important; }
-.hive .cell.stuck .bee-body { transform: rotate(18deg) translateY(3px); animation: none; }
-.hive .cell.stuck .wing { animation-duration: 0.6s !important; }
+
+/* Build queue: gauges, jobs, the line */
+.gauges { display: grid; gap: 7px; margin-bottom: 12px; }
+.gauge { display: grid; grid-template-columns: 62px 1fr auto; align-items: center; gap: 10px; }
+.gauge .label { font-size: 10px; }
+.gauge .meter { margin-top: 0; height: 7px; }
+.gauge .gv { font: 12px var(--font-mono); color: var(--fg-2); min-width: 88px; text-align: right; }
+.gauge.warn .meter span { background: linear-gradient(90deg, var(--warn), var(--bad)); }
+.gauge.warn .gv { color: var(--warn); }
+.mono-line { font-family: var(--font-mono); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.qpos { width: 26px; height: 26px; flex: none; display: grid; place-items: center; clip-path: var(--hexv); background: var(--warn); color: var(--honey-ink); font: 700 12px var(--font-mono); }
 
 /* Kitten progress (say --progress) */
 .kbar { display: flex; align-items: center; gap: 8px; margin-top: 6px; }

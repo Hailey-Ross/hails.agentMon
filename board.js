@@ -53,7 +53,7 @@
       plump: 0.88 + r() * 0.3, head: 3.3 + r() * 1.5, wing: 0.78 + r() * 0.5, wingTilt: r() * 16 - 8, antenna: r() * 8 - 4,
       flapA: 0.055 + r() * 0.07, flapB: 0.055 + r() * 0.07, buzz: 2.1 + r() * 3.4, buzzKind: Math.floor(r() * 4), buzzDelay: -r() * 6,
       jitter: 0.22 + r() * 0.3, tilt: r() * 26 - 13, build: 11 + r() * 17, buildKind: Math.floor(r() * 3), buildDelay: -r() * 20,
-      fill: 7 + r() * 11, fillDelay: -r() * 15, wobble: 1.6 + r() * 1.6, seed: seedOf(id),
+      fill: 7 + r() * 11, fillDelay: -r() * 30, fillKind: Math.floor(r() * 3), wave: 1.4 + r() * 2.6, waveBack: r() < 0.4, wobble: 1.6 + r() * 1.6, seed: seedOf(id), fx1: 0.6 + r() * 1.2, fx2: 1.4 + r() * 1.6, fy1: 0.7 + r() * 1.3, fy2: 1.6 + r() * 1.9, slosh1: 0.5 + r() * 0.9, slosh2: 1.1 + r() * 1.3, waveSpeed: 1.2 + r() * 2.4, buildA: 0.12 + r() * 0.25, buildB: 0.31 + r() * 0.4,
     };
     traitCache.set(id, t);
     return t;
@@ -76,9 +76,11 @@
       <path d="M${f2(rx + t.head * 0.4)} ${f2(-t.head * 0.8)}q2 -4 ${f2(4 + t.antenna * 0.4)} ${f2(-4.5 + t.antenna * 0.3)}" fill="none" stroke="#2b1a00" stroke-width="1" stroke-linecap="round"/>
       <path d="M${f2(-rx)} 1l-3 0.6" stroke="#2b1a00" stroke-width="1.4" stroke-linecap="round"/></g>`;
   }
-  // A bee that buzzes about in its own way: its own path, pace and phase.
-  function bee(t) {
-    return `<g class="bee buzz-${t.buzzKind}" style="animation-duration:${f2(t.buzz)}s;animation-delay:${f2(t.buzzDelay)}s"><g class="bee-body" style="animation-duration:${f2(t.jitter)}s">${beeInner(t)}</g></g>`;
+  // A bee that buzzes about in its own way: its own path, pace and phase. The bee is its own small layer:
+  // the path and the jitter move the layer on the GPU (no redraw); only the tiny wings redraw as they flap.
+  function beeLayer(t, extra) {
+    return `<div class="beebox${extra ? ' ' + extra : ''}"><div class="bee buzz-${t.buzzKind}" style="animation-duration:${f2(t.buzz)}s;animation-delay:${f2(t.buzzDelay)}s">`
+      + `<div class="bee-jit" style="animation-duration:${f2(t.jitter)}s"><svg class="bee-svg" viewBox="-15 -14 32 26" aria-hidden="true">${beeInner(t)}</svg></div></div></div>`;
   }
   const miniBee = (id) => `<svg class="mini-bee" viewBox="-14 -13 30 24" aria-hidden="true">${beeInner(traits(id))}</svg>`;
 
@@ -89,6 +91,8 @@
     if (!s.running) return { key: 'closed', tone: '', label: 'closed' };
     const t = s.tasks || [];
     if (s.status === 'waiting') return { key: 'asks', tone: 'bad', label: 'needs your answer' };
+    if (s.queued) return { key: 'busy', tone: 'warn', label: `waiting for a build slot (${ordinal(s.queued)} in line)` };
+    if (s.pausedJob) return { key: 'busy', tone: 'warn', label: 'build paused, machine full' };
     if (s.status === 'busy') return { key: 'busy', tone: 'busy', label: 'working' };
     if (s.status === 'shell') return { key: 'busy', tone: 'busy', label: t.length ? 'running ' + t[t.length - 1].label : 'running a command' };
     if (t.length) return { key: 'busy', tone: 'busy', label: 'background: ' + t[t.length - 1].label };
@@ -96,6 +100,8 @@
     return { key: 'ready', tone: 'ready', label: s.status || 'open' };
   }
   function kittenTone(mood, text) {
+    // "Question: ..." = an agent waiting on your answer.
+    if (/question|ask/i.test(mood || '') || /^Question\b/i.test(text || '')) return 'question';
     if (/fail|problem|error|worried/i.test(mood || '')) return 'problem';
     if (/wait/i.test(mood || '')) return 'waiting';
     if (mood) return 'work';
@@ -124,12 +130,12 @@
       if (!p) { if (!askedFor.has(ls.id)) { askedFor.add(ls.id); post('refresh'); } continue; }
       let s = p.sessions.find((x) => x.id === ls.id);
       const labels = new Map(((s && s.tasks) || []).map((x) => [x.pid, x.label]));
-      const tasks = (ls.tasks || []).map((x) => ({ pid: x.pid, label: labels.get(x.pid) || x.exe, started: x.started ? new Date(x.started).toISOString() : null, cpuAt: x.cpuAt || null }));
+      const tasks = (ls.tasks || []).map((x) => ({ pid: x.pid, label: x.label || labels.get(x.pid) || x.exe, started: x.started ? new Date(x.started).toISOString() : null, cpuAt: x.cpuAt || null }));
       if (!s) {
         s = { id: ls.id, name: '', title: '', aiTitle: '', where: '', lastWrite: new Date(t).toISOString(), lastPrompt: '', lastSaid: '' };
         p.sessions.unshift(s);
       }
-      Object.assign(s, { running: true, status: ls.status || '', name: ls.name || s.name, pid: ls.pid, tasks, since: ls.since || null, activity: ls.activity || null });
+      Object.assign(s, { running: true, status: ls.status || '', name: ls.name || s.name, pid: ls.pid, tasks, since: ls.since || null, activity: ls.activity || null, subagents: ls.subagents || [] });
       if (norm(ls.cwd) !== norm(p.root)) s.where = String(ls.cwd).split(/[\\/]/).pop();
     }
     if (Array.isArray(L.kitten)) {
@@ -138,8 +144,12 @@
         kind: k.mood || '', progress: k.progress == null ? null : k.progress, progressLabel: k.progress_label || '', project: '',
       }));
     }
+    d.gate = L.gate || null;
+    d.agents = L.agents || [];
+    d.jobs = L.jobs || [];
     return d;
   }
+  function ordinal(n) { const s = ['th', 'st', 'nd', 'rd'], v = n % 100; return n + (s[(v - 20) % 10] || s[v] || s[0]); }
 
   // ---------- derived ----------
   function kittenProject(k, projects) {
@@ -158,12 +168,27 @@
   function derive(d) {
     const projects = d.projects.slice();
     const sessions = [];
-    for (const p of projects) for (const s of p.sessions) { const x = Object.assign({ project: p }, s); x.st = sstate(x); sessions.push(x); }
+    // The build gate: who is queued (and where), whose build agentMon paused.
+    const gate = d.gate || null;
+    const queuedAt = new Map(), pausedFor = new Map();
+    if (gate) {
+      gate.waiting.forEach((w, i) => { if (w.sid && !queuedAt.has(w.sid)) queuedAt.set(w.sid, i + 1); });
+      for (const j of gate.jobs) if (j.paused && j.sid) pausedFor.set(j.sid, j);
+    }
+    for (const p of projects) for (const s of p.sessions) {
+      const x = Object.assign({ project: p }, s);
+      x.queued = s.running ? queuedAt.get(s.id) || 0 : 0;
+      x.pausedJob = s.running ? pausedFor.get(s.id) || null : null;
+      x.st = sstate(x);
+      sessions.push(x);
+    }
     const running = sessions.filter((s) => s.running);
     const by = (k) => running.filter((s) => s.st.key === k);
     const kitten = d.kitten.map((k) => Object.assign({ proj: kittenProject(k, projects) }, k));
     const needs = [];
-    for (const k of kitten) if (k.mood !== 'work') needs.push({ tone: k.mood === 'problem' ? 'bad' : 'warn', title: k.text, sub: 'Kitten' + (k.name ? ': ' + k.name : ''), when: k.time, proj: k.proj, key: 'k' + k.name + k.text });
+    for (const k of kitten) if (k.mood !== 'work') needs.push({ tone: k.mood === 'problem' ? 'bad' : 'warn', title: k.text, sub: (k.mood === 'question' ? 'Asking you · ' : 'Kitten') + (k.name ? (k.mood === 'question' ? '' : ': ') + k.name : ''), when: k.time, proj: k.proj, key: 'k' + k.name + k.text });
+    // Background jobs that are blocked on you.
+    for (const j of d.jobs || []) if (j.needs) needs.push({ tone: 'warn', title: `Job needs you: ${j.needs}`, sub: j.detail || j.state, when: j.updated, key: 'job' + j.id });
     for (const p of projects) {
       for (const pr of p.prs) if (pr.checks === 'fail') needs.push({ tone: 'bad', title: `#${pr.number} checks failing`, sub: pr.title, url: pr.url, proj: p, key: 'pr' + pr.url });
       for (const r of p.runs) if (r.result === 'fail') needs.push({ tone: 'bad', title: `CI ${r.state}: ${r.workflow}`, sub: `${r.repo} on ${r.branch}`, url: r.url, when: r.created, proj: p, key: 'run' + r.url });
@@ -177,7 +202,7 @@
       p._dirty = p.git ? p.git.changed + p.git.worktrees.reduce((a, w) => a + w.changed, 0) : 0;
     }
     projects.sort((a, b) => b._asks - a._asks || b._busy - a._busy || b._open - a._open || ms(a.lastActive) - ms(b.lastActive));
-    return { projects, sessions, running, busy: by('busy'), ready: by('ready'), asks: by('asks'), kitten, needs };
+    return { projects, sessions, running, busy: by('busy'), ready: by('ready'), asks: by('asks'), kitten, needs, gate, agents: d.agents || [], jobs: d.jobs || [] };
   }
   const kittenFor = (st, p) => st.kitten.filter((k) => k.proj === p);
   // The kitten line of one session: the line whose name shares a word with the session's name or worktree
@@ -189,7 +214,7 @@
     if (!ks.length) return null;
     const own = new Set(tokens(s.project.name));
     const words = tokens([sessName(s), s.where || ''].join(' ')).filter((t) => t.length >= 4 && !own.has(t) && !GENERIC.has(t));
-    const hit = ks.find((k) => tokens(k.name).some((t) => words.some((w) => t.startsWith(w) || (w.startsWith(t) && t.length >= 4))));
+    const hit = ks.find((k) => tokens(k.name).filter((t) => !own.has(t)).some((t) => words.some((w) => t.startsWith(w) || (w.startsWith(t) && t.length >= 4))));
     if (hit) return hit;
     const busyHere = st.busy.filter((x) => x.project === s.project);
     return busyHere.length === 1 && ks.length === 1 ? ks[0] : null;
@@ -291,6 +316,10 @@
   // Timing and health of every open session: turn time, each task's time against its history, and
   // signs of being stuck (a task using no CPU for minutes, or a working session writing nothing at all).
   const stuckSeen = new Set();
+  // Tools that should be using CPU while they run (so a long stretch without any means trouble).
+  const COMPUTE = new Set(['cargo', 'rustc', 'msbuild', 'cmake', 'ninja', 'cl', 'link', 'dotnet', 'devenv', 'gradle', 'go', 'make', 'mingw32-make',
+    'clang', 'clang++', 'gcc', 'g++', 'javac', 'mvn', 'npm', 'pnpm', 'yarn', 'bun', 'deno', 'tsc', 'webpack', 'vite', 'pytest', 'cargo-nextest']);
+  const isCompute = (t) => COMPUTE.has(String(t.label || '').split(/\s+/)[0].toLowerCase().replace(/\.exe$/, ''));
   function annotate(st) {
     const now = Date.now();
     for (const s of st.running) {
@@ -305,12 +334,18 @@
         t.quiet = t.cpuAt ? (now - t.cpuAt) / 1000 : null;
       }
       s.health = null;
-      const hung = (s.tasks || []).find((t) => t.quiet != null && t.quiet > 300 && t.secs > 360);
-      const activeTask = (s.tasks || []).some((t) => t.quiet != null && t.quiet < 120);
+      // "No CPU for minutes" only means hung for a compute tool (a build, a compiler, a test runner). A watcher
+      // (gh run watch, a sleep, a remote wait) is supposed to sit still, and running one is a deliberate wait,
+      // as is a kitten line in the waiting mood.
+      const tasks = s.tasks || [];
+      const hung = tasks.find((t) => !t.paused && isCompute(t) && t.quiet != null && t.quiet > 300 && t.secs > 360);
+      const activeTask = tasks.some((t) => t.quiet != null && t.quiet < 120);
+      const waitingOnPurpose = !!(s.queued || s.pausedJob) || tasks.some((t) => !isCompute(t)) || st.kitten.some((k) => k.mood === 'waiting' && sessionKitten(st, s) === k);
       const silent = s.activity ? (now - s.activity) / 1000 : null;
-      const slowTask = (s.tasks || []).find((t) => t.v && t.v.kind === 'very');
+      const slowTask = tasks.find((t) => t.v && t.v.kind === 'very');
       if (hung) s.health = { level: 'bad', stuck: true, why: `${hung.label} has used no CPU for ${fmt(hung.quiet)}` };
-      else if (s.status === 'busy' && silent != null && silent > 600 && !activeTask) s.health = { level: 'bad', stuck: true, why: `nothing written for ${fmt(silent)}` };
+      else if (s.status === 'busy' && silent != null && silent > 600 && !activeTask && !waitingOnPurpose) s.health = { level: 'bad', stuck: true, why: `nothing written for ${fmt(silent)}` };
+      else if (slowTask && !isCompute(slowTask)) s.health = { level: 'warn', stuck: false, why: `${slowTask.label}: ${slowTask.v.text}` };
       else if (slowTask) s.health = { level: 'warn', stuck: true, why: `${slowTask.label}: ${slowTask.v.text}` };
       else if (s.turnV && s.turnV.kind === 'very') s.health = { level: 'warn', stuck: true, why: `this turn: ${s.turnV.text}` };
       else if (s.status === 'busy' && silent != null && silent > 300 && !activeTask) s.health = { level: 'warn', stuck: false, why: `quiet for ${fmt(silent)}` };
@@ -334,9 +369,13 @@
   const SLOTS = [];
   for (let q = -9; q <= 2; q++) for (let r = -5; r <= 5; r++) {
     const [x, y] = hexXY(q, r);
-    if (x >= 820 && x <= 1370 && y >= 30 && y <= 200) SLOTS.push(q + ',' + r);
+    if (x >= 820 && x <= 1340 && y >= 50 && y <= 190) SLOTS.push(q + ',' + r);
   }
   const slotXY = (k) => { const [q, r] = k.split(',').map(Number); return hexXY(q, r); };
+  // Cells only go where they are seen and clear of the greeting: the right part of what the banner shows
+  // (layoutHive moves this line when the widget is resized).
+  let slotMinX = 820;
+  const inView = (k) => slotXY(k)[0] >= slotMinX;
   const DIRS = [[1, 0], [1, -1], [0, -1], [-1, 0], [-1, 1], [0, 1]];
   const HIVE_KEY = 'am-hive-v1';
   let hive;
@@ -351,10 +390,10 @@
       const [q, r] = near.split(',').map(Number);
       const r2 = rng(salt);
       const dirs = DIRS.slice().sort(() => r2() - 0.5);
-      for (const [dq, dr] of dirs) { const k = (q + dq) + ',' + (r + dr); if (SLOTS.includes(k) && !used.has(k)) return k; }
+      for (const [dq, dr] of dirs) { const k = (q + dq) + ',' + (r + dr); if (SLOTS.includes(k) && inView(k) && !used.has(k)) return k; }
     }
     const [nx, ny] = near ? slotXY(near) : [CX, CY];
-    const free = SLOTS.filter((k) => !used.has(k)).sort((a, b) => { const [ax, ay] = slotXY(a), [bx, by] = slotXY(b); return Math.hypot(ax - nx, ay - ny) - Math.hypot(bx - nx, by - ny); });
+    const free = SLOTS.filter((k) => inView(k) && !used.has(k)).sort((a, b) => { const [ax, ay] = slotXY(a), [bx, by] = slotXY(b); return Math.hypot(ax - nx, ay - ny) - Math.hypot(bx - nx, by - ny); });
     if (free.length) return free[0];
     // Full: the oldest finished cell makes room.
     const capped = Object.entries(hive.cells).filter(([, c]) => !c.sid).sort((a, b) => a[1].at - b[1].at);
@@ -364,6 +403,13 @@
   function syncHive(st) {
     const now = Date.now();
     let changed = false;
+    // Out of view after a resize: finished cells there are cleared; a live session's cell moves into view.
+    for (const [k, c] of Object.entries(hive.cells)) {
+      if (inView(k)) continue;
+      delete hive.cells[k];
+      if (c.sid && hive.owner[c.sid] === k) delete hive.owner[c.sid];
+      changed = true;
+    }
     for (const s of st.running) {
       const key = s.st.key, prev = hive.last[s.id];
       let cell = hive.owner[s.id];
@@ -399,45 +445,296 @@
     }
     if (changed) try { localStorage.setItem(HIVE_KEY, JSON.stringify(hive)); } catch (e) { /* private mode */ }
   }
-  function hiveSvg(st) {
-    const byId = new Map(st.running.map((s) => [s.id, s]));
-    let comb = '', cells = '';
-    for (let q = -11; q <= 3; q++) for (let r = -6; r <= 6; r++) {
-      const [x, y] = hexXY(q, r);
-      if (y < -R || y > HH + R || x < 560) continue;
-      comb += `<path d="${hexPath(x, y, R - 3)}" style="opacity:${Math.max(0.12, 1 - Math.hypot(x - 1150, (y - CY) * 1.6) / 620).toFixed(2)}"/>`;
+  // How full a session's cell is: its progress on the current work, from the best signal there is. Never full
+  // (at most 85%), so the cell is always still being filled; an idle session keeps its last level (at least 60%).
+  const lastLevel = new Map();
+  function fillLevel(st, s) {
+    const CAP = 0.85, FLOOR = 0.08;
+    const scale = (p) => FLOOR + Math.max(0, Math.min(1, p)) * (CAP - FLOOR);
+    if (s.st.key !== 'busy') {
+      const v = Math.max(lastLevel.get(s.id) || 0, 0.6 * CAP / 0.85);
+      return { v: Math.min(CAP, v), why: 'this turn is done' };
     }
-    const now = Date.now();
+    const k = sessionKitten(st, s);
+    const task = (s.tasks || []).find((x) => x.v && x.v.frac != null);
+    let v, why;
+    if (k && k.progress != null) { v = scale(k.progress); why = `kitten progress ${k.progressLabel || Math.round(k.progress * 100) + '%'}`; }
+    else if (task) { v = scale(task.v.frac); why = `${task.label}: ${fmt(task.secs)} against its usual time`; }
+    else if (s.turnV && s.turnV.frac != null) { v = scale(s.turnV.frac); why = `this turn against the usual turn here`; }
+    else if (s.turnSecs != null) { v = scale(1 - Math.exp(-s.turnSecs / 600)); why = `${fmt(s.turnSecs)} of work so far`; }
+    else { v = FLOOR; why = 'just started'; }
+    lastLevel.set(s.id, v);
+    return { v, why };
+  }
+  // The part of a flat-top hexagon (center 0,0, radius r) below the line at fill level `lvl` (0 empty, 1 full).
+  function hexBelow(r, lvl) {
+    const h = r * Math.sqrt(3) / 2, y = h - lvl * 2 * h;
+    const xAt = (yy) => r - Math.abs(yy) / Math.sqrt(3);
+    const pts = [];
+    if (y <= 0) {
+      pts.push([-xAt(y), y], [xAt(y), y], [r, 0], [r / 2, h], [-r / 2, h], [-r, 0]);
+    } else {
+      pts.push([-xAt(y), y], [xAt(y), y], [r / 2, h], [-r / 2, h]);
+    }
+    return 'M' + pts.map(([a, b]) => a.toFixed(1) + ' ' + b.toFixed(1)).join('L') + 'Z';
+  }
+  // ---------- the hive, drawn on one canvas ----------
+  // Lean: one canvas and frames only as often as the motion needs (about 30 a second while bees work, fewer when
+  // the hive is calm or the widget is not focused, none while hidden); the comb and the finished cells are drawn
+  // once to an offscreen image and reused. Everything moves from its own traits and a mix of waves, so no two
+  // cells or bees move in step and nothing visibly repeats.
+  const map = { s: 1, ox: 0, oy: 0, w: 0, h: 0, dpr: 1 };
+  let relayoutTimer = 0;
+  const H = { cells: [], capped: [], hover: null, pressed: null, flights: [], bgKey: '', bg: null, colors: null, levels: new Map(), hoverT: new Map(), frozen: new Map() };
+  const heroObserver = window.ResizeObserver ? new ResizeObserver(() => layoutHive()) : null;
+  let observedHero = null;
+  function cssColors() {
+    const cs = getComputedStyle(document.documentElement), g = (n) => cs.getPropertyValue(n).trim();
+    return { cell: g('--cell'), line: g('--cell-line'), honey: g('--honey'), ready: g('--ready'), bad: g('--bad') };
+  }
+  function layoutHive() {
+    const hero = $('hero'), cv = $('hivecv');
+    if (!hero || !cv) return;
+    const w = hero.clientWidth, h = hero.clientHeight;
+    map.w = w; map.h = h; map.dpr = window.devicePixelRatio || 1;
+    map.s = Math.max(w / HW, h / HH);
+    map.ox = w - HW * map.s;
+    map.oy = (h - HH * map.s) / 2;
+    const pw = Math.round(w * map.dpr), ph = Math.round(h * map.dpr);
+    if (cv.width !== pw || cv.height !== ph) { cv.width = pw; cv.height = ph; H.bg = null; }
+    // Cells stay in the right half of what is shown (the greeting has the left), whole cells only.
+    const min = Math.max(820, HW - (w / map.s) * 0.5 + R * 0.4);
+    if (Math.abs(min - slotMinX) > 1) {
+      slotMinX = min;
+      clearTimeout(relayoutTimer);
+      relayoutTimer = setTimeout(() => render(false), 0);
+    }
+    wakeHive();
+  }
+  // The hive's model for the canvas (called while the page renders); returns the canvas element.
+  function hiveLayers(st) {
+    const byId = new Map(st.running.map((s) => [s.id, s]));
+    const cells = [], capped = [];
     for (const [k, c] of Object.entries(hive.cells)) {
       const [x, y] = slotXY(k);
       const s = c.sid ? byId.get(c.sid) : null;
-      if (!s) {
-        cells += `<g class="cell capped" data-key="cap-${k}" transform="translate(${x.toFixed(1)} ${y.toFixed(1)})"><g class="lift"><path class="wall" d="${hexPath(0, 0, R - 4)}"/><path class="cap-line" d="${hexPath(0, 0, R - 13)}"/></g></g>`;
-        continue;
-      }
-      const t = traits(s.id), key = s.st.key;
-      const nm = sessName(s), short = nm.length > 11 ? nm.slice(0, 10) + '…' : nm;
-      const landing = (arrive.get(s.id) || 0) > now;
-      const clip = 'cl-' + (t.seed % 1e8);
-      let inner = '';
-      if (key === 'busy') {
-        inner = `<clipPath id="${clip}"><path d="${hexPath(0, 0, R - 5)}"/></clipPath>
-          <rect class="honey" clip-path="url(#${clip})" x="${-R}" y="${-R}" width="${2 * R}" height="${2 * R}" style="animation-duration:${f2(t.fill)}s;animation-delay:${f2(t.fillDelay)}s"/>
-          <path class="wall build-${t.buildKind}" pathLength="100" d="${hexPath(0, 0, R - 4)}" style="animation-duration:${f2(t.build)}s;animation-delay:${f2(t.buildDelay)}s"/>
-          <g class="bee-spot${landing ? ' landing' : ''}" transform="translate(0 -10)">${bee(t)}</g>`;
-      } else {
-        inner = `<path class="wall done" d="${hexPath(0, 0, R - 4)}"/><path class="cap-line" d="${hexPath(0, 0, R - 13)}"/>
-          ${key === 'asks' ? '<text class="mark ask" text-anchor="middle" y="2">?</text>' : '<text class="mark ok" text-anchor="middle" y="-2">✓</text>'}`;
-      }
-      const wob = key === 'asks' ? ` style="animation-duration:${f2(t.wobble)}s"` : '';
-      cells += `<g class="cell ${key}${isJust(s.id) ? ' just' : ''}${s.health && s.health.stuck ? ' stuck' : ''}" data-key="c-${esc(s.id)}" data-pid="${s.pid || ''}" data-hint="${esc(s.project.name)}" transform="translate(${x.toFixed(1)} ${y.toFixed(1)})">
-        <title>${esc(nm)} · ${esc(s.project.name)} · ${esc(s.st.label)}${s.turnSecs != null ? ' · ' + fmt(s.turnSecs) : ''}${s.health ? ' · ' + esc(s.health.why) : ''} (click to bring its window to the front)</title>
-        <g class="lift"${wob}>${inner}<text class="cell-name" text-anchor="middle" y="${R * 0.52}">${esc(short)}</text></g></g>`;
+      if (!s) { capped.push({ k, x, y, lvl: 0.58 + (seedOf(k) % 100) / 100 * 0.24 }); continue; }
+      const fill = fillLevel(st, s);
+      const nm = sessName(s);
+      cells.push({
+        id: s.id, k, x, y, t: traits(s.id), key: s.st.key, pid: s.pid, hint: s.project.name, stuck: !!(s.health && s.health.stuck),
+        justUntil: justUntil.get(s.id) || 0, target: fill.v, name: nm.length > 11 ? nm.slice(0, 10) + '…' : nm,
+        title: `${nm} · ${s.project.name} · ${s.st.label}${s.turnSecs != null ? ' · ' + fmt(s.turnSecs) : ''}${s.health ? ' · ' + s.health.why : ''} · honey: ${fill.why} (click to bring its window to the front)`,
+        subs: (s.subagents || []).slice(0, 3).map((a) => traits(a.id)), landing: arrive.get(s.id) || 0,
+      });
     }
-    return `<svg class="hive" id="hive-svg" viewBox="0 0 ${HW} ${HH}" preserveAspectRatio="xMaxYMid slice" aria-hidden="true">
-      <defs><linearGradient id="honeyFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffd36b"/><stop offset="1" stop-color="#e09a12"/></linearGradient></defs>
-      <g class="comb-layer" data-key="comb">${comb}</g><g data-key="cells">${cells}</g><g id="flyers" data-key="flyers"></g></svg>`;
+    H.cells = cells;
+    const key = capped.map((c) => c.k).join('|');
+    if (key !== H.bgKey) { H.bgKey = key; H.capped = capped; H.bg = null; }
+    wakeHive();
+    return '<canvas class="hivecv" id="hivecv" data-key="cv" aria-hidden="true"></canvas>';
   }
+  function hexCtx(c, x, y, r) {
+    c.beginPath();
+    for (let i = 0; i < 6; i++) { const a = Math.PI / 3 * i; const px = x + r * Math.cos(a), py = y + r * Math.sin(a); if (i) c.lineTo(px, py); else c.moveTo(px, py); }
+    c.closePath();
+  }
+  function honeyGradient(c, top, bottom) {
+    const g = c.createLinearGradient(0, top, 0, bottom);
+    g.addColorStop(0, '#ffd36b'); g.addColorStop(0.35, '#f4b334'); g.addColorStop(1, '#e09a12');
+    return g;
+  }
+  // The comb and the cells sessions left behind: drawn once per size, theme or change.
+  function drawBackground(cv) {
+    const off = document.createElement('canvas');
+    off.width = cv.width; off.height = cv.height;
+    const c = off.getContext('2d'), col = H.colors;
+    c.setTransform(map.dpr * map.s, 0, 0, map.dpr * map.s, map.dpr * map.ox, map.dpr * map.oy);
+    c.lineWidth = 1.5;
+    for (let q = -11; q <= 3; q++) for (let r = -6; r <= 6; r++) {
+      const [x, y] = hexXY(q, r);
+      if (y < -R || y > HH + R || x < 560) continue;
+      c.globalAlpha = Math.max(0.12, 1 - Math.hypot(x - 1150, (y - CY) * 1.6) / 620);
+      hexCtx(c, x, y, R - 3);
+      c.fillStyle = col.cell; c.fill();
+      c.strokeStyle = col.line; c.stroke();
+    }
+    c.globalAlpha = 0.62;
+    for (const k of H.capped) {
+      c.save(); c.translate(k.x, k.y);
+      c.fillStyle = honeyGradient(c, -R, R);
+      c.fill(new Path2D(hexBelow(R - 6, k.lvl)));
+      hexCtx(c, 0, 0, R - 4); c.strokeStyle = col.honey; c.lineWidth = 2.4; c.stroke();
+      c.restore();
+    }
+    H.bg = off;
+  }
+  // One bee from its traits, facing `dir` (1 right, -1 left).
+  function drawBee(c, t, x, y, time, size, dir, droop) {
+    const ink = '#2b1a00';
+    c.save();
+    c.translate(x, y);
+    c.scale(dir * t.scale * size, t.scale * size);
+    c.rotate((t.tilt * Math.PI / 180) * 0.5 + (droop ? 0.35 : 0));
+    const rx = 9 * t.plump, ry = 6, w = t.wing;
+    // Wings beat smoothly at the bee's own two rates.
+    const flapA = 0.62 + 0.38 * Math.sin(time * Math.PI / (droop ? 0.6 : t.flapA));
+    const flapB = 0.62 + 0.38 * Math.sin(time * Math.PI / (droop ? 0.6 : t.flapB) + 1.3);
+    c.fillStyle = 'rgba(255,255,255,0.78)'; c.strokeStyle = 'rgba(60,40,0,0.35)'; c.lineWidth = 0.8;
+    for (const [cx, a, fl] of [[-2, -8 + t.wingTilt, flapA], [3, 10 + t.wingTilt, flapB]]) {
+      c.save(); c.translate(cx, -1); c.rotate(a * Math.PI / 180); c.scale(1, fl);
+      c.beginPath(); c.ellipse(0, -5 * w, 4 * w, 6 * w, 0, 0, Math.PI * 2); c.fill(); c.stroke(); c.restore();
+    }
+    c.beginPath(); c.ellipse(0, 1, rx, ry, 0, 0, Math.PI * 2);
+    c.fillStyle = t.body; c.fill();
+    c.save(); c.clip();
+    c.fillStyle = ink;
+    for (const sx of (t.stripes === 3 ? [-4.6, -0.8, 3] : [-3.6, 1.4])) c.fillRect(sx - t.stripeW / 2, -ry, t.stripeW, ry * 2 + 2);
+    c.restore();
+    c.strokeStyle = ink; c.lineWidth = 1; c.stroke();
+    c.beginPath(); c.arc(rx + t.head * 0.55, 0, t.head, 0, Math.PI * 2); c.fillStyle = ink; c.fill();
+    c.beginPath(); c.arc(rx + t.head * 0.9, -1, 0.9, 0, Math.PI * 2); c.fillStyle = '#fff'; c.fill();
+    c.beginPath(); c.moveTo(rx + t.head * 0.4, -t.head * 0.8); c.quadraticCurveTo(rx + t.head * 0.4 + 2, -t.head * 0.8 - 4, rx + t.head * 0.4 + 4 + t.antenna * 0.4, -t.head * 0.8 - 4.5 + t.antenna * 0.3);
+    c.lineWidth = 1; c.lineCap = 'round'; c.stroke();
+    c.beginPath(); c.moveTo(-rx, 1); c.lineTo(-rx - 3, 1.6); c.lineWidth = 1.4; c.stroke();
+    c.restore();
+  }
+  // Where a bee is around its home point: a mix of waves at its own rates (never repeating, never in step).
+  function beeAt(t, time, ph) {
+    const x = 11 * Math.sin(time * t.fx1 + ph) + 5 * Math.sin(time * t.fx2 + ph * 2.1);
+    const y = 7 * Math.sin(time * t.fy1 + ph * 0.7) + 3 * Math.sin(time * t.fy2 + ph * 3.3);
+    const vx = 11 * t.fx1 * Math.cos(time * t.fx1 + ph) + 5 * t.fx2 * Math.cos(time * t.fx2 + ph * 2.1);
+    return [x, y, vx >= 0 ? 1 : -1];
+  }
+  function drawCell(c, cell, now, time) {
+    const t = cell.t, col = H.colors, ph = (t.seed % 997) / 158.7;
+    // A stuck cell holds still: its clock stops where it got stuck.
+    if (cell.stuck) { if (!H.frozen.has(cell.id)) H.frozen.set(cell.id, time); } else H.frozen.delete(cell.id);
+    const tt = H.frozen.has(cell.id) ? H.frozen.get(cell.id) : time;
+    // Eased state: hover lift, honey level.
+    let hv = H.hoverT.get(cell.k) || 0;
+    hv += ((H.hover === cell.k ? 1 : 0) - hv) * 0.22;
+    H.hoverT.set(cell.k, hv);
+    let lv = H.levels.get(cell.id);
+    lv = lv == null ? cell.target : lv + (cell.target - lv) * 0.035;
+    H.levels.set(cell.id, lv);
+    c.save();
+    c.translate(cell.x, cell.y - 4 * hv);
+    let sc = 1 + 0.07 * hv - (H.pressed === cell.k ? 0.07 : 0);
+    const since = 4200 - (cell.justUntil - now);
+    if (cell.justUntil > now && since < 900) sc *= 1 + 0.1 * Math.sin(since / 900 * Math.PI);
+    if (cell.key === 'asks') c.rotate(0.09 * Math.sin(time * 9) * Math.pow(Math.max(0, Math.sin(time * t.wobble * 0.7 + ph)), 12));
+    c.scale(sc, sc);
+    const r = R - 4, rIn = R - 6, h = rIn * Math.sqrt(3) / 2;
+    // Liquid honey inside the hexagon: its level is the session's progress; it sloshes and its surface waves.
+    c.save();
+    hexCtx(c, 0, 0, rIn); c.clip();
+    const calm = cell.key !== 'busy';
+    const ang = (calm ? 0.025 : 0.075) * (0.7 * Math.sin(tt * t.slosh1 + ph) + 0.3 * Math.sin(tt * t.slosh2 + ph * 1.7));
+    const surf = h - lv * 2 * h, amp = calm ? 0.7 : 1.5, dir = t.waveBack ? -1 : 1;
+    c.beginPath(); c.moveTo(-r - 8, R + 8);
+    for (let x = -r - 8; x <= r + 8; x += 3) {
+      c.lineTo(x, surf + Math.tan(ang) * x + amp * Math.sin(x * 0.21 + tt * t.waveSpeed * dir + ph) + amp * 0.4 * Math.sin(x * 0.53 - tt * 1.3 + ph * 2));
+    }
+    c.lineTo(r + 8, R + 8); c.closePath();
+    c.fillStyle = honeyGradient(c, surf - 4, h);
+    c.globalAlpha = cell.stuck ? 0.55 : 0.92; c.fill(); c.globalAlpha = 1;
+    c.restore();
+    // Walls: under construction while working (they grow and settle, never quite close), closed when idle.
+    c.lineJoin = 'round';
+    if (cell.key === 'busy') {
+      hexCtx(c, 0, 0, r); c.setLineDash([3, 4]); c.strokeStyle = col.line; c.lineWidth = 1.4; c.stroke();
+      const per = 6 * r;
+      const prog = 0.55 + 0.4 * (0.5 + 0.5 * (0.6 * Math.sin(tt * t.buildA + ph) + 0.4 * Math.sin(tt * t.buildB + ph * 2.3)));
+      hexCtx(c, 0, 0, r); c.setLineDash([per * prog, per]); c.lineDashOffset = -(ph % 1) * per;
+      c.strokeStyle = cell.stuck ? col.bad : col.honey; c.lineWidth = 3; c.stroke(); c.setLineDash([]); c.lineDashOffset = 0;
+    } else {
+      hexCtx(c, 0, 0, r); c.strokeStyle = cell.key === 'ready' ? col.ready : col.honey; c.lineWidth = 2.4; c.stroke();
+      c.textAlign = 'center';
+      c.font = cell.key === 'asks' ? '800 24px Figtree, Segoe UI, sans-serif' : '800 18px Figtree, Segoe UI, sans-serif';
+      c.fillStyle = cell.key === 'asks' ? col.bad : col.ready;
+      c.fillText(cell.key === 'asks' ? '?' : '✓', 0, cell.key === 'asks' ? 2 : -2);
+    }
+    c.font = '700 10.5px Figtree, Segoe UI, sans-serif'; c.textAlign = 'center';
+    c.lineWidth = 3; c.strokeStyle = 'rgba(255,236,176,0.85)'; c.strokeText(cell.name, 0, R * 0.52);
+    c.fillStyle = '#2b1a00'; c.fillText(cell.name, 0, R * 0.52);
+    // The session's bee (after its flight has landed) and a small worker bee per sub-agent.
+    if (cell.key === 'busy' && cell.landing <= now) {
+      const [bx, by, d] = beeAt(t, cell.stuck ? tt * 0.25 : time, ph);
+      drawBee(c, t, bx, by - 10 + (cell.stuck ? 3 : 0), time, 1, d, cell.stuck);
+    }
+    cell.subs.forEach((st2, i) => {
+      const ph2 = (st2.seed % 991) / 157.7, [bx, by, d] = beeAt(st2, time, ph2);
+      drawBee(c, st2, [-18, 18, 0][i] + bx * 0.6, [8, 6, 16][i] + by * 0.5, time, 0.62, d, false);
+    });
+    c.restore();
+  }
+  function drawFlights(c, now, time) {
+    H.flights = H.flights.filter((f) => now < f.t0 + f.dur);
+    for (const f of H.flights) {
+      let k = (now - f.t0) / f.dur;
+      k = k < 0.5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2;
+      const p = f.pts, n = p.length - 1, seg = Math.min(n - 1, Math.floor(k * n)), u = k * n - seg;
+      // Smooth through the points (Catmull-Rom).
+      const P = (i) => p[Math.max(0, Math.min(n, i))];
+      const [p0, p1, p2, p3] = [P(seg - 1), P(seg), P(seg + 1), P(seg + 2)];
+      const cr = (a, b, cc, dd) => 0.5 * (2 * b + (-a + cc) * u + (2 * a - 5 * b + 4 * cc - dd) * u * u + (-a + 3 * b - 3 * cc + dd) * u * u * u);
+      const x = cr(p0[0], p1[0], p2[0], p3[0]), y = cr(p0[1], p1[1], p2[1], p3[1]);
+      const dir = p2[0] >= p1[0] ? 1 : -1;
+      drawBee(c, f.t, x, y + 2 * Math.sin(time * 7 + f.t0), time, 1, dir, false);
+    }
+  }
+  let frameTimer = 0, rafId = 0;
+  function wakeHive() { if (!frameTimer && !rafId) rafId = requestAnimationFrame(frame); }
+  function frame(nowMs) {
+    rafId = 0;
+    const cv = $('hivecv');
+    if (!cv || document.hidden || !map.w) return;
+    const now = Date.now(), time = nowMs / 1000;
+    if (!H.colors) H.colors = cssColors();
+    if (!H.bg) drawBackground(cv);
+    const c = cv.getContext('2d');
+    c.setTransform(1, 0, 0, 1, 0, 0);
+    c.clearRect(0, 0, cv.width, cv.height);
+    c.drawImage(H.bg, 0, 0);
+    c.setTransform(map.dpr * map.s, 0, 0, map.dpr * map.s, map.dpr * map.ox, map.dpr * map.oy);
+    for (const cell of H.cells) drawCell(c, cell, now, time);
+    drawFlights(c, now, time);
+    // Frame budget: about 30 a second while bees work or fly, 20 when the widget is not focused, 10 when calm.
+    const lively = H.cells.some((x) => x.key === 'busy' || x.subs.length) || H.flights.length || H.hover;
+    const fps = !lively ? 10 : document.hasFocus() ? 30 : 20;
+    frameTimer = setTimeout(() => { frameTimer = 0; rafId = requestAnimationFrame(frame); }, 1000 / fps);
+  }
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) wakeHive(); });
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { H.colors = null; H.bg = null; });
+  // Pointer: hover lifts a cell, click brings its session's window to the front.
+  function cellUnder(e) {
+    const cv = $('hivecv'), rc = cv.getBoundingClientRect();
+    const x = (e.clientX - rc.left - map.ox) / map.s, y = (e.clientY - rc.top - map.oy) / map.s;
+    let best = null, bd = R * 0.9;
+    for (const cell of H.cells) { const d = Math.hypot(x - cell.x, y - cell.y); if (d < bd) { bd = d; best = cell; } }
+    return best;
+  }
+  view.addEventListener('pointermove', (e) => {
+    if (e.target.id !== 'hivecv') return;
+    const cell = cellUnder(e);
+    const k = cell ? cell.k : null;
+    if (k !== H.hover) {
+      H.hover = k;
+      e.target.style.cursor = cell && cell.pid ? 'pointer' : '';
+      e.target.title = cell ? cell.title : '';
+      wakeHive();
+    }
+  });
+  view.addEventListener('pointerleave', () => { H.hover = null; }, true);
+  view.addEventListener('click', (e) => {
+    if (e.target.id !== 'hivecv') return;
+    const cell = cellUnder(e);
+    if (!cell || !cell.pid || !app) return;
+    H.pressed = cell.k;
+    setTimeout(() => { H.pressed = null; }, 160);
+    post('focus:' + cell.pid + '|' + (cell.hint || ''));
+  });
   function hero(st) {
     const hr = new Date().getHours();
     const greet = hr < 5 ? 'The hive never sleeps' : hr < 12 ? 'Good morning' : hr < 17 ? 'Good afternoon' : hr < 22 ? 'Good evening' : 'Good night';
@@ -445,57 +742,38 @@
     if (st.busy.length) parts.push(`<b>${st.busy.length}</b> working`);
     if (st.asks.length) parts.push(`<b>${st.asks.length}</b> asking you`);
     if (st.ready.length) parts.push(`<b>${st.ready.length}</b> ready for you`);
+    const subCount = st.running.reduce((n, s) => n + (s.subagents || []).length, 0);
+    if (subCount) parts.push(`<b>${subCount}</b> sub-agent${subCount === 1 ? '' : 's'}`);
+    if (st.agents.length) parts.push(`<b>${st.agents.length}</b> other agent${st.agents.length === 1 ? '' : 's'}`);
     const done = Object.values(hive.cells).filter((c) => !c.sid).length;
     if (done) parts.push(`<b>${done}</b> cell${done === 1 ? '' : 's'} finished`);
-    return `<section class="hero" data-key="hero" id="hero">${hiveSvg(st)}
+    return `<section class="hero" data-key="hero" id="hero">${hiveLayers(st)}
       <div class="hello"><h1>${greet}</h1><p>${esc(new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' }))}</p><p>${parts.join(' · ')}</p></div></section>`;
   }
-
   // Flights: a bee moving to its new cell, and now and then a forager crossing the hive.
-  function flyerEl(t) {
-    const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
-    g.setAttribute('class', 'flyer');
-    g.innerHTML = bee(t);
-    return g;
-  }
-  function fly(points, t, ms0, onDone) {
-    const layer = $('flyers');
-    if (!layer || !layer.animate) return;
-    const g = flyerEl(t);
-    layer.appendChild(g);
-    const frames = points.map(([x, y], i) => {
-      const [nx, ny] = points[Math.min(i + 1, points.length - 1)], [px, py] = points[Math.max(i - 1, 0)];
-      const ang = Math.atan2(ny - py, nx - px) * 180 / Math.PI;
-      const flip = Math.abs(ang) > 90 ? -1 : 1;
-      return { transform: `translate(${x}px, ${y}px) scale(${flip}, 1) rotate(${f2(flip > 0 ? ang * 0.35 : (180 - ang) * -0.35)}deg)` };
-    });
-    const a = g.animate(frames, { duration: ms0, easing: 'cubic-bezier(.45,.05,.4,1)' });
-    a.onfinish = () => { g.remove(); if (onDone) onDone(); };
-  }
   function runMoves() {
     while (moves.length) {
       const m = moves.shift();
       const [x0, y0] = slotXY(m.from), [x1, y1] = slotXY(m.to);
       const r = rng(seedOf(m.id) + Date.now());
       const mid = [(x0 + x1) / 2 + (r() - 0.5) * 60, Math.min(y0, y1) - 30 - r() * 40];
-      fly([[x0, y0 - 10], mid, [x1, y1 - 10]], traits(m.id), 1300 + r() * 500);
+      H.flights.push({ pts: [[x0, y0 - 10], mid, [x1, y1 - 10]], t0: Date.now(), dur: 1300 + r() * 500, t: traits(m.id) });
     }
+    wakeHive();
   }
   let forager = 0;
   function scheduleForager() {
     clearTimeout(forager);
     forager = setTimeout(() => {
-      if (!document.hidden && $('flyers')) {
+      if (!document.hidden && $('hivecv')) {
         const r = rng(Date.now() >>> 0);
-        const fromLeft = r() < 0.5;
-        const pts = [];
-        const n = 4 + Math.floor(r() * 3);
+        const fromLeft = r() < 0.5, n = 4 + Math.floor(r() * 3), pts = [];
         for (let i = 0; i <= n; i++) {
           const f = i / n;
-          const x = fromLeft ? -40 + f * (HW + 80) : HW + 40 - f * (HW + 80);
-          pts.push([x, 40 + r() * 150]);
+          pts.push([fromLeft ? -40 + f * (HW + 80) : HW + 40 - f * (HW + 80), 40 + r() * 150]);
         }
-        fly(pts, traits('forager' + Math.floor(r() * 1e6)), 9000 + r() * 9000);
+        H.flights.push({ pts, t0: Date.now(), dur: 9000 + r() * 9000, t: traits('forager' + Math.floor(r() * 1e6)) });
+        wakeHive();
       }
       scheduleForager();
     }, 5000 + Math.random() * 14000);
@@ -512,14 +790,17 @@
     const label = s.st.label + (s.turnSecs != null ? ' · ' + fmt(s.turnSecs) : s.waitFor != null && s.waitFor > 45 ? ' · ' + fmt(s.waitFor) : '');
     const health = s.health ? `<div class="said stuckline ${s.health.level}"><span class="who">${s.health.stuck ? 'stuck?' : 'note'}</span>${esc(s.health.why)}</div>` : '';
     const can = app && s.running && s.pid;
+    const subs = s.running ? s.subagents || [] : [];
+    const subLines = subs.map((a) => `<div class="said sub"><span class="who">${a.background ? 'background agent' : 'sub-agent'}</span>${esc(a.description || a.type || 'agent')} · ${esc(ago(a.activity))}</div>`).join('');
     return `<div class="row ${s.st.tone}${isJust(s.id) ? ' just' : ''}${can ? ' focusable' : ''}${s.health && s.health.stuck ? ' stuck' : ''}" data-key="s-${esc(s.id)}"${can ? ` data-pid="${s.pid}" data-hint="${esc(s.project.name)}" title="Click to bring this window to the front"` : ''}>
       ${av(s.project.name, 'sm')}
       <div class="row-main">
-        <div class="row-top"><b>${esc(sessName(s))}</b>${s.st.key === 'busy' ? miniBee(s.id) : ''}${s.running ? tag(s.st.tone, label) : tag('plain', 'closed')}${s.health && s.health.stuck ? tag(s.health.level === 'bad' ? 'bad' : 'warn', 'stuck?') : ''}<span class="when">${esc(ago(s.lastWrite))}</span></div>
+        <div class="row-top"><b>${esc(sessName(s))}</b>${s.st.key === 'busy' ? miniBee(s.id) : ''}${s.running ? tag(s.st.tone, label) : tag('plain', 'closed')}${subs.length ? tag('busy', subs.length + ' sub-agent' + (subs.length > 1 ? 's' : '')) : ''}${s.health && s.health.stuck ? tag(s.health.level === 'bad' ? 'bad' : 'warn', 'stuck?') : ''}<span class="when">${esc(ago(s.lastWrite))}</span></div>
         <div class="sub"><a href="${projHref(s.project)}">${esc(s.project.name)}</a>${sub ? ' · ' + esc(sub) : ''}</div>
         ${health}
         ${s.turnV && s.turnV.frac != null ? etaBar(s.turnV, 'this turn ' + fmt(s.turnSecs)) : ''}
         ${tasks}
+        ${subLines}
         ${k ? `<div class="said kit"><span class="who">kitten</span>${esc(k.text)}</div>${kbar(k)}` : ''}
         ${s.lastPrompt ? `<div class="said you"><span class="who">you</span>${esc(s.lastPrompt)}</div>` : ''}
         ${s.lastSaid && !opts.short ? `<div class="said"><span class="who">claude</span>${esc(s.lastSaid)}</div>` : ''}
@@ -547,6 +828,8 @@
           ${card('working', 'busy', 'Working', working.length, '', rowsOr(working, 'Nothing is running. The hive is resting.'))}
           ${card('ready', 'ready', 'Ready for you', st.ready.length, '<a class="link" href="#sessions">All sessions</a>', '<div class="hint">Finished their turn and waiting on your reply</div>' + rowsOr(st.ready.map((s) => sessionRow(st, s)), 'No session is waiting on you.'))}
         </div><div class="col">
+          ${gateCard(st)}
+          ${othersCard(st)}
           ${card('open', '', 'The hive', null, '', `<div class="big">${st.running.length}<small>sessions open</small></div><div class="tags">${tag('busy', st.busy.length + ' working')}${st.asks.length ? tag('bad', st.asks.length + ' asking') : ''}${tag('ready', st.ready.length + ' ready')}${tag('plain', st.projects.length + ' projects this month')}</div>`)}
           ${card('look', st.needs.some((n) => n.tone === 'bad') ? 'bad' : st.needs.length ? 'warn' : '', 'Look at', st.needs.length || null, '', rowsOr(needs, 'All clear: no failing CI, no stuck kitten, nothing behind.'))}
           ${card('projects', '', 'Projects', st.projects.length, '<a class="link" href="#projects">Open</a>', '<div class="hint">Bar = how recently it was active</div><div class="plist">' + plist.join('') + '</div>')}
@@ -579,6 +862,63 @@
         <div class="cards">${cards.join('') || card('none', '', 'Nothing open', null, '', '<div class="empty">No open PRs or CI runs found.</div>')}</div>`;
     },
   };
+
+  // Every other agent on the machine (Claude runs without a window, other agent tools) and background jobs.
+  function othersCard(st) {
+    if (!st.agents.length && !st.jobs.length) return '';
+    const now = Date.now();
+    const agentRows = st.agents.map((a) => {
+      const active = a.cpuAt && now - a.cpuAt < 120000;
+      return `<div class="row ${active ? 'busy' : 'ready'}${app ? ' focusable' : ''}" data-key="ag-${a.pid}"${app ? ` data-pid="${a.pid}" data-hint="" title="Click to bring its window to the front"` : ''}>
+        <span class="av sm neutral" aria-hidden="true">${esc(a.kind.slice(0, 2))}</span><div class="row-main">
+        <div class="row-top"><b>${esc(a.kind)}</b>${tag(active ? 'busy' : 'ready', active ? 'working' : 'quiet')}<span class="when">${a.started ? esc(fmt((now - a.started) / 1000)) : ''}</span></div>
+        <div class="sub">process ${a.pid}</div></div></div>`;
+    });
+    const jobRows = st.jobs.map((j) => `<div class="row ${j.needs ? 'warn' : 'busy'}" data-key="jb-${esc(j.id)}"><div class="row-main">
+        <div class="row-top"><b>${esc(j.detail || 'Background job')}</b>${tag(j.needs ? 'warn' : 'plain', j.state || 'running')}<span class="when">${esc(ago(j.updated))}</span></div>
+        ${j.needs ? `<div class="said kit"><span class="who">needs you</span>${esc(j.needs)}</div>` : ''}</div></div>`);
+    return card('others', jobRows.some((r) => r.includes('needs you')) ? 'warn' : '', 'Other agents and jobs', st.agents.length + st.jobs.length, '',
+      `<div class="rows">${agentRows.join('')}${jobRows.join('')}</div>`);
+  }
+
+  // The build gate: machine gauges, what holds a slot, what waits for one.
+  function gateCard(st) {
+    const g = st.gate;
+    if (!g) return '';
+    const byId = new Map(st.sessions.map((s) => [s.id, s]));
+    const who = (x) => { const s = x.sid && byId.get(x.sid); return s ? sessName(s) : x.session || x.exe || 'unknown'; };
+    const proj = (x) => { const s = x.sid && byId.get(x.sid); return s ? s.project.name : ''; };
+    const used = g.jobs.filter((j) => !j.paused).length;
+    const cpuTone = g.cpu >= g.maxCpu ? 'warn' : '';
+    const memTone = g.freeGb < g.minFreeGb ? 'warn' : '';
+    const gauge = (label, frac, text, tone) => `<div class="gauge ${tone}"><span class="label">${label}</span><div class="meter"><span style="width:${Math.min(100, Math.max(2, frac * 100)).toFixed(0)}%"></span></div><span class="gv">${esc(text)}</span></div>`;
+    const jobRow = (j) => {
+      const secs = j.started ? (Date.now() - j.started) / 1000 : null;
+      const hold = j.kind === 'hold';
+      const what = hold ? `slot reserved for a series of commands${j.expires ? ' · ' + fmt((j.expires - Date.now()) / 1000) + ' left' : ''}` : j.gated ? j.cmd : j.exe;
+      const tags = [hold ? tag('busy', 'reserved') : j.kind === 'batch' ? tag('good', 'batch') : j.gated ? tag('good', 'through the gate') : j.game ? tag('plain', 'game') : tag('warn', 'outside the gate'),
+        j.exclusive ? tag('bad', 'exclusive') : '', (j.locks || []).length ? tag('plain', 'lock: ' + j.locks.map((l) => l.split(/[\\/]/).pop()).join(', ')) : '',
+        j.paused ? tag('bad', 'paused by agentMon · ' + fmt((Date.now() - j.paused) / 1000)) : ''].join('');
+      const pid = app && j.sid && byId.get(j.sid) ? byId.get(j.sid).pid : 0;
+      return `<div class="row ${j.paused ? 'warn' : 'busy'}${pid ? ' focusable' : ''}" data-key="j-${j.pid}"${pid ? ` data-pid="${pid}" data-hint="${esc(proj(j))}"` : ''}>${proj(j) ? av(proj(j), 'sm') : '<span class="av sm neutral" aria-hidden="true">⚙</span>'}<div class="row-main">
+        <div class="row-top"><b>${esc(who(j))}</b><span class="when">${secs != null ? esc(fmt(secs)) : ''}</span></div>
+        <div class="sub mono-line">${esc(what)}</div><div class="tags">${tags}</div></div></div>`;
+    };
+    const waitRow = (w, i) => {
+      const pid = app && w.sid && byId.get(w.sid) ? byId.get(w.sid).pid : 0;
+      return `<div class="row warn${pid ? ' focusable' : ''}" data-key="w-${w.pid}"${pid ? ` data-pid="${pid}" data-hint="${esc(proj(w))}"` : ''}><span class="qpos">${i + 1}</span><div class="row-main">
+        <div class="row-top"><b>${esc(who(w))}</b><span class="when">waiting ${esc(fmt((Date.now() - w.created) / 1000))}</span></div>
+        <div class="sub mono-line">${esc(w.cmd)}</div></div></div>`;
+    };
+    const body = `<div class="gauges">
+        ${gauge('CPU', g.cpu / 100, Math.round(g.cpu) + '%', cpuTone)}
+        ${gauge('Memory', 1 - g.freeGb / Math.max(1, g.totalGb), g.freeGb.toFixed(1) + ' GB free', memTone)}
+        ${gauge('Slots', used / Math.max(1, g.slots), used + ' of ' + g.slots + ' in use', used >= g.slots ? 'warn' : '')}</div>
+      ${g.jobs.length ? `<div class="rows">${g.jobs.map(jobRow).join('')}</div>` : '<div class="empty">No heavy work running.</div>'}
+      ${g.waiting.length ? `<div class="label" style="margin:12px 0 6px">Waiting for a slot</div><div class="rows">${g.waiting.map(waitRow).join('')}</div>` : ''}`;
+    const tone = g.jobs.some((j) => j.paused) || g.waiting.length ? 'warn' : g.jobs.length ? 'busy' : '';
+    return card('gate', tone, 'Build queue', g.jobs.length + g.waiting.length || null, '', body);
+  }
 
   function prRows(p) {
     const prs = p.prs.map((x) => {
@@ -624,7 +964,7 @@
     if (a.nodeType !== b.nodeType || a.nodeName !== b.nodeName) { a.replaceWith(b); return; }
     if (a.nodeType === 3 || a.nodeType === 8) { if (a.nodeValue !== b.nodeValue) a.nodeValue = b.nodeValue; return; }
     if (a.nodeType !== 1) return;
-    if (a.id === 'flyers') return;
+    if (a.id === 'flyers' || a.nodeName === 'CANVAS') return;
     for (const at of Array.from(a.attributes)) if (!b.hasAttribute(at.name)) a.removeAttribute(at.name);
     for (const at of Array.from(b.attributes)) if (a.getAttribute(at.name) !== at.value) a.setAttribute(at.name, at.value);
     morphChildren(a, b);
@@ -686,6 +1026,13 @@
       }
       shownView = v;
       chrome(st, v);
+      const hero = $('hero');
+      if (hero && hero !== observedHero && heroObserver) {
+        if (observedHero) heroObserver.unobserve(observedHero);
+        heroObserver.observe(hero);
+        observedHero = hero;
+      }
+      layoutHive();
       runMoves();
     };
     if (swap && viaNav && document.startViewTransition) document.startViewTransition(apply); else apply();
@@ -712,7 +1059,7 @@
 
   // ---------- input: clicks, presses, hover ----------
   function ripple(el, e) {
-    if (el instanceof SVGElement) return;
+    if (el instanceof SVGElement || el.classList.contains('cellbox')) return;
     const r = el.getBoundingClientRect();
     const dot = document.createElement('span');
     dot.className = 'ripple';
@@ -732,18 +1079,6 @@
       setTimeout(() => f.classList.remove('pressed'), 380);
       post('focus:' + f.dataset.pid + '|' + (f.dataset.hint || ''));
     }
-  });
-  // The comb drifts a touch with the pointer over the hero.
-  let raf = 0;
-  view.addEventListener('pointermove', (e) => {
-    const hero = e.target.closest('.hero');
-    if (!hero || raf) return;
-    raf = requestAnimationFrame(() => {
-      raf = 0;
-      const r = hero.getBoundingClientRect();
-      hero.style.setProperty('--px', f2((e.clientX - r.left) / r.width - 0.5));
-      hero.style.setProperty('--py', f2((e.clientY - r.top) / r.height - 0.5));
-    });
   });
   addEventListener('hashchange', () => render(true));
 
@@ -765,7 +1100,9 @@
   };
 
   // ---------- data in ----------
+  // The app pushes both tiers in (agentMonSlow once a minute, agentMonLive on every change); nothing polls.
   window.agentMonLive = (snapshot) => { live = snapshot; render(false); };
+  window.agentMonSlow = (data) => { slow = data; slowStamp = data.generated; render(false); };
   function load() {
     const old = $('data-script');
     if (old) old.remove();
@@ -792,6 +1129,9 @@
     const dark = t === 'dark' || (t === 'auto' && matchMedia('(prefers-color-scheme: dark)').matches);
     document.documentElement.dataset.theme = dark ? 'dark' : 'light';
     $('theme').title = 'Theme: ' + t + ' (click to change)';
+    H.colors = null;
+    H.bg = null;
+    wakeHive();
   }
   $('theme').addEventListener('click', () => {
     const t = localStorage.getItem('am-theme') || 'auto';
@@ -873,10 +1213,10 @@
   $('fresh').addEventListener('click', () => { if (app) { post('refresh'); toast('Refreshing'); } else load(); });
 
   applyTheme();
-  load();
   tick();
-  // In the app the data arrives by push; the page only polls as a fallback.
-  setInterval(load, app ? 60000 : 15000);
+  // In the app the data is pushed (ask for the latest once); in a browser, board-data.js is polled.
+  if (app) post('ready');
+  else { load(); setInterval(load, 15000); }
   setInterval(tick, 1000);
   setInterval(() => render(false), 20000);
   scheduleForager();
