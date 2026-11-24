@@ -151,9 +151,11 @@ fn wait_turn(ticket: &mut Ticket, opts: &Opts) -> bool {
             format!("{jobs} heavy job{} running, CPU {load:.0}%, {:.1} GB free", if jobs == 1 { "" } else { "s" }, m.free_gb)
         };
         let note = if ahead > 0 { format!("waiting for a slot: {} in line; {why}", ordinal(ahead + 1)) } else { format!("waiting for a slot: next in line; {why}") };
-        if note != last_note || last_print.elapsed() > Duration::from_secs(60) {
+        // Reprint when the reason changes, not when only the numbers in it move.
+        let key: String = note.chars().filter(|c| !c.is_ascii_digit() && *c != '.').collect();
+        if key != last_note || last_print.elapsed() > Duration::from_secs(60) {
             eprintln!("agentmon-run: {note}");
-            last_note = note;
+            last_note = key;
             last_print = Instant::now();
         }
         if opts.wait_max.is_some_and(|w| began.elapsed() > w) {
