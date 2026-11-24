@@ -38,9 +38,16 @@ unsafe extern "system" fn collect(hwnd: HWND, lparam: LPARAM) -> i32 {
     1
 }
 
-/// Focus the window for session process `pid`; `hint` (the project folder name) picks between several windows
-/// of one app. Returns whether a window was found.
-pub fn focus_session(pid: u32, hint: &str) -> bool {
+/// The part of a window title before the first " - ", without a leading status glyph ("◐ SkateRust Engine").
+fn lead(title: &str) -> String {
+    let first = title.split(" - ").next().unwrap_or("");
+    first.trim_start_matches(|c: char| !c.is_alphanumeric()).trim().to_lowercase()
+}
+
+/// Focus the window for session process `pid`. Between several windows of one app, a title led by the session's
+/// `name` wins (VS Code shows "<session> - <folder> - Visual Studio Code"; two sessions can share a folder), then
+/// one naming the project `folder`. Returns whether a window was found.
+pub fn focus_session(pid: u32, name: &str, folder: &str) -> bool {
     let parent: HashMap<u32, u32> = processes().into_iter().map(|p| (p.pid, p.ppid)).collect();
     let mut chain = Vec::new();
     let mut seen = HashSet::new();
@@ -54,11 +61,16 @@ pub fn focus_session(pid: u32, hint: &str) -> bool {
     // SAFETY: the callback only touches the Vec behind lparam, which outlives the call.
     unsafe { EnumWindows(Some(collect), &mut windows as *mut Vec<Found> as LPARAM) };
 
-    let hint = hint.to_lowercase();
-    // Nearest ancestor first; within it, a title naming the project first.
+    let name = name.trim().to_lowercase();
+    let folder = folder.to_lowercase();
+    // Nearest ancestor first; within it, the session's own title, then the project's, then any.
     let best = chain.iter().find_map(|p| {
         let mine: Vec<&Found> = windows.iter().filter(|w| w.pid == *p).collect();
-        mine.iter().find(|w| !hint.is_empty() && w.title.to_lowercase().contains(&hint)).or(mine.first()).map(|w| w.hwnd)
+        mine.iter()
+            .find(|w| !name.is_empty() && lead(&w.title) == name)
+            .or_else(|| mine.iter().find(|w| !folder.is_empty() && w.title.to_lowercase().contains(&folder)))
+            .or(mine.first())
+            .map(|w| w.hwnd)
     });
     let Some(hwnd) = best else { return false };
     // SAFETY: hwnd came from EnumWindows just now; these calls fail harmlessly if it has closed since.
@@ -67,5 +79,17 @@ pub fn focus_session(pid: u32, hint: &str) -> bool {
             ShowWindow(hwnd, SW_RESTORE);
         }
         SetForegroundWindow(hwnd) != 0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::lead;
+
+    #[test]
+    fn the_session_name_leads_a_vs_code_title() {
+        assert_eq!(lead("◐ SkateRust Engine - skate-3-rust-engine - Visual Studio Code"), "skaterust engine");
+        assert_eq!(lead("✳ agentMon - skate-3-rust-engine - Visual Studio Code"), "agentmon");
+        assert_eq!(lead("skate-3-rust-engine - Visual Studio Code"), "skate-3-rust-engine");
     }
 }

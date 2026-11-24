@@ -522,7 +522,7 @@
       const fill = fillLevel(st, s);
       const nm = sessName(s);
       cells.push({
-        id: s.id, k, x, y, t: traits(s.id), key: s.st.key, pid: s.pid, hint: s.project.name, stuck: !!(s.health && s.health.stuck),
+        id: s.id, k, x, y, t: traits(s.id), key: s.st.key, pid: s.pid, hint: s.project.name, sname: s.name || '', stuck: !!(s.health && s.health.stuck),
         justUntil: justUntil.get(s.id) || 0, target: fill.v, name: nm.length > 11 ? nm.slice(0, 10) + '…' : nm,
         title: `${nm} · ${s.project.name} · ${s.st.label}${s.turnSecs != null ? ' · ' + fmt(s.turnSecs) : ''}${s.health ? ' · ' + s.health.why : ''} · honey: ${fill.why} (click to bring its window to the front)`,
         subs: (s.subagents || []).slice(0, 3).map((a) => traits(a.id)), landing: arrive.get(s.id) || 0,
@@ -733,7 +733,7 @@
     if (!cell || !cell.pid || !app) return;
     H.pressed = cell.k;
     setTimeout(() => { H.pressed = null; }, 160);
-    post('focus:' + cell.pid + '|' + (cell.hint || ''));
+    post('focus:' + cell.pid + '|' + (cell.hint || '') + '|' + (cell.sname || ''));
   });
   function hero(st) {
     const hr = new Date().getHours();
@@ -792,7 +792,7 @@
     const can = app && s.running && s.pid;
     const subs = s.running ? s.subagents || [] : [];
     const subLines = subs.map((a) => `<div class="said sub"><span class="who">${a.background ? 'background agent' : 'sub-agent'}</span>${esc(a.description || a.type || 'agent')} · ${esc(ago(a.activity))}</div>`).join('');
-    return `<div class="row ${s.st.tone}${isJust(s.id) ? ' just' : ''}${can ? ' focusable' : ''}${s.health && s.health.stuck ? ' stuck' : ''}" data-key="s-${esc(s.id)}"${can ? ` data-pid="${s.pid}" data-hint="${esc(s.project.name)}" title="Click to bring this window to the front"` : ''}>
+    return `<div class="row ${s.st.tone}${isJust(s.id) ? ' just' : ''}${can ? ' focusable' : ''}${s.health && s.health.stuck ? ' stuck' : ''}" data-key="s-${esc(s.id)}"${can ? ` data-pid="${s.pid}" data-hint="${esc(s.project.name)}" data-sname="${esc(s.name || '')}" title="Click to bring this window to the front"` : ''}>
       ${av(s.project.name, 'sm')}
       <div class="row-main">
         <div class="row-top"><b>${esc(sessName(s))}</b>${s.st.key === 'busy' ? miniBee(s.id) : ''}${s.running ? tag(s.st.tone, label) : tag('plain', 'closed')}${subs.length ? tag('busy', subs.length + ' sub-agent' + (subs.length > 1 ? 's' : '')) : ''}${s.health && s.health.stuck ? tag(s.health.level === 'bad' ? 'bad' : 'warn', 'stuck?') : ''}<span class="when">${esc(ago(s.lastWrite))}</span></div>
@@ -1077,7 +1077,7 @@
       ripple(f, e);
       f.classList.add('pressed');
       setTimeout(() => f.classList.remove('pressed'), 380);
-      post('focus:' + f.dataset.pid + '|' + (f.dataset.hint || ''));
+      post('focus:' + f.dataset.pid + '|' + (f.dataset.hint || '') + '|' + (f.dataset.sname || ''));
     }
   });
   addEventListener('hashchange', () => render(true));

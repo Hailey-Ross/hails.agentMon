@@ -293,9 +293,11 @@ fn main() {
                         open_external(url);
                         None
                     } else if let Some(rest) = m.strip_prefix("focus:") {
-                        // focus:<pid>|<project folder name>
-                        let (pid, hint) = rest.split_once('|').unwrap_or((rest, ""));
-                        pid.parse::<u32>().ok().map(|pid| UserEvent::Focused(focus::focus_session(pid, hint)))
+                        // focus:<pid>|<project folder name>|<session name>
+                        let mut parts = rest.splitn(3, '|');
+                        let pid = parts.next().unwrap_or("");
+                        let (folder, name) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""));
+                        pid.parse::<u32>().ok().map(|pid| UserEvent::Focused(focus::focus_session(pid, name, folder)))
                     } else {
                         parse_size(m).map(|(w, h)| UserEvent::Size(w, h))
                     }
