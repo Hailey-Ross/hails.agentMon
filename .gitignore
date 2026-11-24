@@ -1,0 +1,6 @@
+# Live data about your sessions, prompts and repos: written every minute, never committed.
+board-data.js
+board-data.js.tmp
+gh-cache.json
+/target
+scan-cache.json

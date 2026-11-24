@@ -1,0 +1,391 @@
+/* agentMon: a hive-mind monitor for Claude Code sessions. Layout started from the FlexDex Field
+   Kit (rail, top bar, hero, card grid, list + detail); the look is its own: honey, wax and
+   honeycomb, one hex cell per open session, a bee in every cell that is working. Fonts: OFL, see fonts/. */
+@font-face { font-family: 'Bricolage Grotesque'; font-weight: 200 800; font-display: swap; src: url(fonts/bricolage-grotesque-latin.woff2) format('woff2'); }
+@font-face { font-family: 'Figtree'; font-weight: 300 900; font-display: swap; src: url(fonts/figtree-latin.woff2) format('woff2'); }
+@font-face { font-family: 'JetBrains Mono'; font-weight: 100 800; font-display: swap; src: url(fonts/jetbrains-mono-latin.woff2) format('woff2'); }
+
+:root {
+  --font-display: 'Bricolage Grotesque', 'Segoe UI', system-ui, sans-serif;
+  --font-body: 'Figtree', 'Segoe UI', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'Cascadia Mono', Consolas, monospace;
+  --r-lg: 22px; --r-md: 14px;
+  --ease: cubic-bezier(0.22, 1, 0.36, 1); --spring: cubic-bezier(0.34, 1.4, 0.64, 1);
+  --bar-h: 58px; --rail-w: 78px;
+  --hex: polygon(25% 3%, 75% 3%, 100% 50%, 75% 97%, 25% 97%, 0% 50%);
+  --hexv: polygon(50% 0%, 96% 25%, 96% 75%, 50% 100%, 4% 75%, 4% 25%);
+}
+:root[data-theme="light"] {
+  --bg: #fbf5e6; --surface: #fffdf6; --surface-2: #f6edd5; --surface-3: #efe2c2;
+  --line: rgba(110, 70, 10, 0.12); --line-hi: rgba(110, 70, 10, 0.22);
+  --fg: #2b1f0e; --fg-2: #5a4628; --fg-3: #87704d;
+  --honey: #d99208; --honey-2: #f2b632; --honey-ink: #2b1a00; --wax: #f7e4ae; --wax-cap: #fff1c2;
+  --busy: #d99208; --ready: #3f9a5a; --bad: #c8412f; --warn: #c66a12; --good: #3f9a5a;
+  --comb: rgba(170, 110, 10, 0.10); --glow: rgba(242, 182, 50, 0.22);
+  --hero-a: #ffe7a6; --hero-b: #f6c25a; --cell: rgba(255, 250, 230, 0.55); --cell-line: rgba(140, 85, 0, 0.35);
+  --shadow: 0 1px 2px rgba(90, 60, 10, 0.06), 0 18px 36px -26px rgba(110, 70, 10, 0.45);
+  color-scheme: light;
+}
+:root[data-theme="dark"] {
+  --bg: #14100a; --surface: #1d170e; --surface-2: #251e13; --surface-3: #2f2718;
+  --line: rgba(255, 210, 120, 0.08); --line-hi: rgba(255, 210, 120, 0.16);
+  --fg: #f6ecd6; --fg-2: #cdbd9c; --fg-3: #9a8a6b;
+  --honey: #f5b83d; --honey-2: #ffd36b; --honey-ink: #2b1a00; --wax: #3a2e18; --wax-cap: #f7d98a;
+  --busy: #f5b83d; --ready: #8fd18a; --bad: #ff7b6b; --warn: #ff9f4a; --good: #8fd18a;
+  --comb: rgba(255, 200, 90, 0.055); --glow: rgba(245, 184, 61, 0.12);
+  --hero-a: #2a1e0c; --hero-b: #4a320c; --cell: rgba(255, 210, 120, 0.05); --cell-line: rgba(255, 200, 90, 0.26);
+  --shadow: 0 1px 0 rgba(255, 220, 150, 0.03) inset, 0 20px 40px -26px rgba(0, 0, 0, 0.85);
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+/* Scrollable everywhere, no visible scrollbars */
+html, * { scrollbar-width: none; }
+::-webkit-scrollbar { display: none; width: 0; height: 0; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.5 var(--font-body); transition: background-color 0.5s var(--ease), color 0.3s; -webkit-font-smoothing: antialiased; }
+a { color: inherit; text-decoration: none; }
+button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+:focus-visible { outline: 2px solid var(--honey); outline-offset: 2px; border-radius: 8px; }
+h1, h2, h3 { margin: 0; text-wrap: balance; }
+[hidden] { display: none !important; }
+svg.ic { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+.label { font: 500 10.5px var(--font-mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--fg-3); }
+.muted { color: var(--fg-3); }
+.small { font-size: 12.5px; }
+
+/* Background: honeycomb with a warm glow (static: a moving full-window layer costs a lot of drawing) */
+.ambient { position: fixed; inset: 0; z-index: -1; pointer-events: none; overflow: hidden; }
+.ambient svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+.ambient svg path { fill: none; stroke: var(--comb); stroke-width: 1.2; }
+.ambient i { position: absolute; width: 70vmax; height: 70vmax; border-radius: 50%; background: radial-gradient(closest-side, var(--glow), transparent); }
+.ambient i:nth-child(2) { left: -20vmax; top: -25vmax; }
+.ambient i:nth-child(3) { right: -25vmax; bottom: -30vmax; }
+
+/* Rail */
+.rail { position: fixed; z-index: 40; top: 14px; bottom: 14px; left: 14px; width: var(--rail-w); display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 14px 0;
+  border-radius: 26px; background: var(--surface); border: 1px solid var(--line); box-shadow: var(--shadow); }
+.brand { display: flex; flex-direction: column; align-items: center; gap: 6px; margin-bottom: 10px; }
+.logo { width: 48px; height: 48px; display: block; transition: transform 0.6s var(--spring); filter: drop-shadow(0 6px 10px rgba(200, 130, 0, 0.35)); }
+.brand:hover .logo { transform: rotate(30deg); }
+.wm { font: 700 11px/1 var(--font-display); color: var(--fg-2); }
+.nav { position: relative; display: flex; flex-direction: column; gap: 6px; }
+.nav-glow { position: absolute; left: 0; top: 0; width: 60px; height: 56px; clip-path: var(--hex); background: color-mix(in oklab, var(--honey) 20%, transparent);
+  transition: transform 0.5s var(--spring); pointer-events: none; }
+.item { position: relative; width: 60px; height: 56px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
+  font-size: 10.5px; font-weight: 600; color: var(--fg-3); transition: color 0.3s; }
+.item:hover { color: var(--fg); }
+.item svg.ic { width: 22px; height: 22px; transition: transform 0.4s var(--spring); }
+.item:hover svg.ic { transform: translateY(-2px) rotate(-6deg); }
+.item[aria-current="page"] { color: var(--fg); }
+.item[aria-current="page"] svg.ic { color: var(--honey); }
+.badge { position: absolute; top: 2px; right: 2px; min-width: 19px; height: 19px; padding: 0 5px; display: grid; place-items: center; clip-path: var(--hex);
+  background: var(--honey); color: var(--honey-ink); font: 700 10.5px/1 var(--font-mono); animation: pop 0.45s var(--spring); }
+.badge.bad { background: var(--bad); color: #fff; }
+@keyframes pop { from { transform: scale(0.4); opacity: 0; } }
+.rail-foot { margin-top: auto; width: 44px; height: 44px; border-radius: 14px; display: grid; place-items: center; color: var(--fg-3); transition: color 0.2s, background 0.2s, transform 0.5s var(--spring); }
+.rail-foot:hover { color: var(--honey); background: var(--surface-2); transform: rotate(30deg); }
+
+/* Top bar */
+.topbar { position: fixed; top: 0; right: 0; left: calc(var(--rail-w) + 28px); z-index: 30; height: var(--bar-h); padding: 0 30px 0 22px; display: flex; align-items: center; gap: 10px;
+  background: linear-gradient(var(--bg) 40%, transparent); }
+.clock { font: 600 14px var(--font-mono); color: var(--fg-2); white-space: nowrap; }
+.spacer { flex: 1; }
+.chip { display: inline-flex; align-items: center; gap: 8px; height: 32px; padding: 0 13px 0 11px; border-radius: 99px; background: color-mix(in oklab, var(--surface) 85%, transparent);
+  border: 1px solid var(--line); font-size: 12.5px; color: var(--fg-2); white-space: nowrap; }
+.chip b { color: var(--fg); font-weight: 600; }
+.beat { width: 9px; height: 9px; clip-path: var(--hexv); background: var(--honey); animation: beat 2.4s infinite; }
+.beat.stale { background: var(--warn); animation: none; }
+@keyframes beat { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.35); opacity: 0.6; } }
+
+.frame { margin-left: calc(var(--rail-w) + 28px); padding: calc(var(--bar-h) + 6px) 30px 44px 22px; min-height: 100vh; }
+.page { max-width: 1340px; margin: 0 auto; }
+
+/* Hero: the hive. Each open session owns a cell: a working session's cell is under construction (walls
+   drawn in, honey filling and settling, never quite done); an idle one is finished and capped; when the
+   session goes back to work its bee flies to a new cell and the finished one stays as part of the hive.
+   Every cell and bee runs on its own traits (pace, phase, path), so nothing moves in step. */
+.hero { position: relative; height: 230px; border-radius: 28px; overflow: hidden; isolation: isolate; box-shadow: var(--shadow); border: 1px solid var(--line);
+  background: radial-gradient(90% 140% at 100% 0%, var(--hero-b), transparent 70%), linear-gradient(120deg, var(--hero-a), color-mix(in oklab, var(--hero-a) 60%, var(--hero-b))); }
+.hero svg.hive { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.hive .comb-layer { transform: translate(calc(var(--px, 0) * -10px), calc(var(--py, 0) * -6px)); transition: transform 0.9s var(--ease); }
+.hive .comb-layer path { fill: var(--cell); stroke: var(--cell-line); stroke-width: 1.5; }
+.hive .cell { cursor: default; }
+.hive .cell[data-pid] { cursor: pointer; }
+.hive .lift { transition: transform 0.45s var(--spring); }
+.hive .cell[data-pid]:hover .lift { transform: translateY(-4px) scale(1.07); }
+.hive .cell.pressed .lift { transform: scale(0.93); transition-duration: 0.12s; }
+.hive .wall { fill: var(--cell); stroke: var(--cell-line); stroke-width: 2.2; stroke-linejoin: round; }
+.hive .cell-name { font: 700 10.5px var(--font-body); fill: var(--fg); paint-order: stroke; stroke: color-mix(in oklab, var(--hero-a) 70%, transparent); stroke-width: 3px; }
+.hive .mark { font-weight: 800; }
+.hive .mark.ok { font-size: 18px; fill: var(--ready); }
+.hive .mark.ask { font-size: 24px; fill: var(--bad); }
+
+/* Under construction: the walls go in a stretch at a time and never close; the honey rises and settles. */
+.hive .cell.busy .wall { fill: transparent; stroke: var(--honey); stroke-width: 3; stroke-dasharray: 100; animation: build-0 linear infinite; }
+.hive .cell.busy .wall.build-1 { animation-name: build-1; } .hive .cell.busy .wall.build-2 { animation-name: build-2; }
+@keyframes build-0 { 0% { stroke-dashoffset: 96; } 22% { stroke-dashoffset: 62; } 38% { stroke-dashoffset: 58; } 61% { stroke-dashoffset: 21; } 74% { stroke-dashoffset: 26; } 92% { stroke-dashoffset: 7; } 100% { stroke-dashoffset: 12; } }
+@keyframes build-1 { 0% { stroke-dashoffset: 92; } 15% { stroke-dashoffset: 80; } 33% { stroke-dashoffset: 47; } 49% { stroke-dashoffset: 49; } 70% { stroke-dashoffset: 15; } 86% { stroke-dashoffset: 9; } 100% { stroke-dashoffset: 18; } }
+@keyframes build-2 { 0% { stroke-dashoffset: 98; } 30% { stroke-dashoffset: 70; } 45% { stroke-dashoffset: 34; } 58% { stroke-dashoffset: 37; } 80% { stroke-dashoffset: 5; } 100% { stroke-dashoffset: 14; } }
+.hive .honey { fill: url(#honeyFill); opacity: 0.85; transform-box: fill-box; transform-origin: 50% 100%; animation: honey ease-in-out infinite alternate; }
+@keyframes honey { 0% { transform: scaleY(0.08); } 35% { transform: scaleY(0.36); } 55% { transform: scaleY(0.3); } 100% { transform: scaleY(0.82); } }
+
+/* Finished: walls closed, honey to the brim and capped with wax. A capped cell left behind stays a little dimmer. */
+.hive .wall.done, .hive .cell.capped .wall { fill: url(#honeyFill); stroke: var(--honey); stroke-width: 2.4; }
+.hive .cap-line { fill: color-mix(in oklab, var(--wax-cap) 70%, transparent); stroke: color-mix(in oklab, var(--honey) 50%, transparent); stroke-width: 1.2; }
+.hive .cell.capped { opacity: 0.62; }
+.hive .cell.capped .lift { transition: none; }
+.hive .cell.ready .wall.done { stroke: var(--ready); }
+.hive .cell.just .lift { animation: finish 0.9s var(--spring); }
+@keyframes finish { 0% { transform: scale(0.86); } 55% { transform: scale(1.12); } 100% { transform: scale(1); } }
+.hive .cell.asks .lift { animation: wobble ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
+@keyframes wobble { 0%, 70%, 100% { transform: rotate(0); } 76% { transform: rotate(-5deg); } 84% { transform: rotate(4deg); } 92% { transform: rotate(-2deg); } }
+.hive .cell.born .lift { animation: born 0.7s var(--spring); }
+@keyframes born { from { transform: scale(0.2); opacity: 0; } }
+
+/* Bees: each on its own path (four kinds), pace and phase. */
+.hive .bee { animation: buzz-0 ease-in-out infinite; }
+.hive .bee.buzz-1 { animation-name: buzz-1; } .hive .bee.buzz-2 { animation-name: buzz-2; } .hive .bee.buzz-3 { animation-name: buzz-3; }
+@keyframes buzz-0 { 0%, 100% { transform: translate(-9px, 2px) rotate(-8deg); } 25% { transform: translate(6px, -7px) rotate(10deg); } 50% { transform: translate(10px, 4px) rotate(4deg); } 75% { transform: translate(-4px, 8px) rotate(-12deg); } }
+@keyframes buzz-1 { 0%, 100% { transform: translate(0, 0) rotate(0); } 18% { transform: translate(-11px, -4px) rotate(-14deg); } 47% { transform: translate(-3px, 7px) rotate(6deg); } 63% { transform: translate(9px, -2px) rotate(12deg); } 81% { transform: translate(4px, -9px) rotate(-4deg); } }
+@keyframes buzz-2 { 0%, 100% { transform: translate(5px, 3px) rotate(6deg); } 33% { transform: translate(-7px, -8px) rotate(-10deg); } 66% { transform: translate(-10px, 6px) rotate(-3deg); } }
+@keyframes buzz-3 { 0%, 100% { transform: translate(-2px, -6px) rotate(-4deg); } 12% { transform: translate(8px, -6px) rotate(8deg); } 29% { transform: translate(10px, 5px) rotate(14deg); } 54% { transform: translate(-6px, 9px) rotate(-8deg); } 77% { transform: translate(-12px, -1px) rotate(-16deg); } }
+.hive .bee-body { animation: jitter ease-in-out infinite alternate; }
+.hive .cell[data-pid]:hover .bee-body { animation-duration: 0.12s !important; }
+.hive .wing, .mini-bee .wing { fill: rgba(255, 255, 255, 0.78); stroke: rgba(60, 40, 0, 0.35); stroke-width: 0.8; transform-box: fill-box; transform-origin: bottom center; animation: flap linear infinite alternate; }
+@keyframes flap { from { transform: scaleY(1); } to { transform: scaleY(0.3); } }
+@keyframes jitter { to { transform: translate(0.8px, -1.2px); } }
+/* A bee that just flew in from its old cell appears once the flight lands. */
+.hive .bee-spot.landing { opacity: 0; }
+.hive .bee-spot { transition: opacity 0.35s; }
+.hive .flyer { pointer-events: none; }
+
+.hello { position: absolute; left: 28px; top: 24px; z-index: 2; pointer-events: none; max-width: 46%; }
+.hello h1 { font: 750 clamp(28px, 3.4vw, 40px)/1.05 var(--font-display); letter-spacing: -0.03em; }
+.hello p { margin: 6px 0 0; color: var(--fg-2); font-size: 14.5px; }
+.hello p b { color: var(--fg); }
+
+/* Page head */
+.head { margin: 20px 0 6px; }
+.head h1 { font: 750 clamp(28px, 3.6vw, 38px)/1.05 var(--font-display); letter-spacing: -0.025em; }
+.head p { margin: 6px 0 0; color: var(--fg-2); }
+
+/* Cards: wax panels; a honey strip on top by tone; a hex dot and a count in the header */
+.card { position: relative; background: color-mix(in oklab, var(--surface) 94%, transparent); border: 1px solid var(--line); border-radius: var(--r-lg); box-shadow: var(--shadow);
+  padding: 16px 18px 18px; min-width: 0; transition: border-color 0.3s, transform 0.4s var(--spring), box-shadow 0.3s; }
+.card::after { content: ""; position: absolute; left: 24px; right: 24px; top: -1px; height: 3px; border-radius: 0 0 4px 4px; background: var(--tone, transparent); transition: background 0.4s; }
+.card[data-tone="busy"] { --tone: var(--busy); } .card[data-tone="ready"] { --tone: var(--ready); } .card[data-tone="bad"] { --tone: var(--bad); } .card[data-tone="warn"] { --tone: var(--warn); }
+.card-h { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; min-height: 24px; }
+.card-h h2 { font: 700 17px var(--font-display); letter-spacing: -0.01em; }
+.card-h .dot { width: 11px; height: 11px; clip-path: var(--hexv); background: var(--tone, var(--fg-3)); }
+.card-h .n { font: 600 11px var(--font-mono); color: var(--fg-2); background: var(--surface-2); border-radius: 99px; padding: 1px 8px; }
+.card-h .link { margin-left: auto; font-size: 13px; font-weight: 600; color: var(--honey); }
+.card-h .link:hover { text-decoration: underline; }
+.hint { font-size: 12.5px; color: var(--fg-3); margin: -6px 0 10px; }
+.big { font: 600 40px/1 var(--font-mono); letter-spacing: -0.02em; }
+.big small { font: 500 14px var(--font-body); color: var(--fg-3); margin-left: 6px; letter-spacing: 0; }
+.empty { color: var(--fg-3); font-size: 13.5px; padding: 8px 2px; }
+
+/* Layouts */
+.grid-home { display: grid; gap: 18px; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); align-items: start; margin-top: 18px; }
+.col { display: grid; gap: 18px; align-content: start; min-width: 0; }
+.split { display: grid; gap: 22px; grid-template-columns: minmax(0, 1.2fr) minmax(380px, 1fr); align-items: start; margin-top: 18px; }
+.picks { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
+.cards { display: grid; gap: 18px; grid-template-columns: repeat(auto-fill, minmax(400px, 1fr)); margin-top: 18px; }
+@media (max-width: 1150px) { .grid-home, .split { grid-template-columns: 1fr; } .detail { position: static !important; max-height: none !important; } }
+
+/* Avatar: a hex cell in the project's own hue, honey-warm */
+.av { --s: 40px; --h: 40; width: calc(var(--s) * 1.08); height: var(--s); flex: none; clip-path: var(--hex); display: grid; place-items: center;
+  background: linear-gradient(150deg, hsl(var(--h) 80% 68%), hsl(calc(var(--h) + 18) 65% 42%)); color: #fff;
+  font: 750 calc(var(--s) * 0.34)/1 var(--font-display); letter-spacing: -0.02em; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35); }
+.av.sm { --s: 30px; } .av.lg { --s: 64px; }
+.av.neutral { background: var(--surface-3); color: var(--fg-3); text-shadow: none; }
+.hive text.cell-name { font-size: 10.5px; }
+
+/* Rows */
+.rows { display: flex; flex-direction: column; gap: 8px; }
+.row { position: relative; display: flex; gap: 12px; align-items: flex-start; padding: 12px 14px; border-radius: var(--r-md); background: var(--surface-2); min-width: 0;
+  transition: background 0.25s, transform 0.4s var(--spring); }
+a.row:hover { background: var(--surface-3); transform: translateX(2px); }
+.row::before { content: ""; position: absolute; left: 0; top: 12px; bottom: 12px; width: 3px; border-radius: 0 3px 3px 0; background: var(--tone, transparent); }
+.row.busy { --tone: var(--busy); } .row.ready { --tone: var(--ready); } .row.bad { --tone: var(--bad); } .row.warn { --tone: var(--warn); }
+.row-main { flex: 1; min-width: 0; }
+.row-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.row-top b { font-size: 14.5px; font-weight: 650; }
+.when { margin-left: auto; font: 11.5px var(--font-mono); color: var(--fg-3); white-space: nowrap; }
+.sub { font-size: 12.5px; color: var(--fg-3); margin-top: 1px; }
+.sub a:hover { color: var(--fg); text-decoration: underline; }
+.said { font-size: 13px; color: var(--fg-2); margin-top: 6px; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.said .who { font: 600 9.5px var(--font-mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--fg-3); margin-right: 7px; }
+.said.you .who { color: var(--honey); } .said.kit .who { color: var(--warn); }
+
+/* Tags */
+.tag { display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 9px; border-radius: 99px; background: var(--surface-3); color: var(--fg-2); font-size: 11.5px; font-weight: 600; white-space: nowrap; }
+.tag i { width: 7px; height: 7px; clip-path: var(--hexv); background: currentColor; flex: none; }
+.tag.busy { color: var(--busy); background: color-mix(in oklab, var(--busy) 15%, transparent); }
+.tag.ready { color: var(--ready); background: color-mix(in oklab, var(--ready) 15%, transparent); }
+.tag.bad { color: var(--bad); background: color-mix(in oklab, var(--bad) 15%, transparent); }
+.tag.warn { color: var(--warn); background: color-mix(in oklab, var(--warn) 15%, transparent); }
+.tag.good { color: var(--good); background: color-mix(in oklab, var(--good) 15%, transparent); }
+.tag.plain { background: transparent; box-shadow: inset 0 0 0 1px var(--line-hi); }
+.tag.plain i { display: none; }
+.tags { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; align-items: center; }
+
+/* Tiny bee for "working" in rows */
+.mini-bee { width: 24px; height: 19px; display: inline-block; vertical-align: middle; overflow: visible; }
+/* Row bees rest their wings (no constant redraws); they flap while you hover the row or it just changed. */
+.mini-bee .wing { animation-play-state: paused; }
+.row:hover .mini-bee .wing, .row.just .mini-bee .wing { animation-play-state: running; }
+
+/* Time against the usual: a bar per turn / task, colored by the verdict */
+.eta { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+.eta .meter { flex: 0 0 34%; margin-top: 0; height: 6px; }
+.eta > span { font-size: 12px; color: var(--fg-2); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.eta.due .meter span, .eta.long .meter span { background: linear-gradient(90deg, var(--warn), var(--honey)); }
+.eta.long > span { color: var(--warn); }
+.eta.very .meter span { background: var(--bad); }
+.eta.very > span { color: var(--bad); font-weight: 600; }
+.eta.on .meter span { transition: width 1s linear; }
+/* Stuck: a red edge on the row, a reason line; in the hive a reddened wall and a slow, drooping bee */
+.said.stuckline .who { color: var(--warn); }
+.said.stuckline.bad { color: var(--bad); }
+.said.stuckline.bad .who { color: var(--bad); }
+.row.stuck { --tone: var(--bad); background: color-mix(in oklab, var(--bad) 7%, var(--surface-2)); }
+.hive .cell.stuck .wall { stroke: var(--bad) !important; }
+.hive .cell.stuck .honey { animation-play-state: paused; opacity: 0.55; }
+.hive .cell.stuck .bee { animation-duration: 11s !important; }
+.hive .cell.stuck .bee-body { transform: rotate(18deg) translateY(3px); animation: none; }
+.hive .cell.stuck .wing { animation-duration: 0.6s !important; }
+
+/* Kitten progress (say --progress) */
+.kbar { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+.kbar .meter { flex: 1; margin-top: 0; height: 6px; }
+.kbar > span { font: 11px var(--font-mono); color: var(--fg-3); white-space: nowrap; }
+
+/* Project list on Home */
+.plist { display: flex; flex-direction: column; gap: 2px; }
+.prow { display: flex; align-items: center; gap: 12px; padding: 8px; border-radius: 12px; transition: background 0.2s; }
+.prow:hover { background: var(--surface-2); }
+.prow b { font-size: 14px; font-weight: 650; }
+.meter { height: 5px; border-radius: 99px; background: var(--surface-3); margin-top: 7px; overflow: hidden; }
+.meter span { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--honey), var(--honey-2)); transition: width 0.8s var(--ease); }
+
+/* Project picker */
+.pick { text-align: left; width: 100%; display: flex; gap: 12px; align-items: flex-start; cursor: pointer; }
+.pick:hover { border-color: var(--line-hi); transform: translateY(-2px); }
+.pick:active { transform: scale(0.985); }
+.pick[aria-pressed="true"] { border-color: color-mix(in oklab, var(--honey) 65%, transparent); box-shadow: 0 0 0 3px color-mix(in oklab, var(--honey) 18%, transparent), var(--shadow); }
+.pick h3 { font: 700 16px/1.2 var(--font-display); overflow-wrap: anywhere; }
+.pick .state { font: 500 10.5px var(--font-mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--fg-3); margin-bottom: 2px; }
+.pick[data-tone="busy"] .state { color: var(--busy); } .pick[data-tone="ready"] .state { color: var(--ready); }
+
+/* Detail panel */
+.detail { position: sticky; top: calc(var(--bar-h) + 6px); max-height: calc(100vh - var(--bar-h) - 24px); overflow-y: auto; }
+.dhead { display: flex; gap: 16px; align-items: center; }
+.dhead h2 { font: 750 26px/1.1 var(--font-display); letter-spacing: -0.02em; overflow-wrap: anywhere; }
+.path { font: 11.5px var(--font-mono); color: var(--fg-3); margin-top: 4px; overflow-wrap: anywhere; }
+.stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 16px 0 2px; }
+.stat { padding: 10px 12px; border-radius: 14px; background: var(--surface-2); }
+.stat b { display: block; font: 600 22px/1.15 var(--font-mono); }
+.stat span { font-size: 11.5px; color: var(--fg-3); }
+.stat.warn b { color: var(--warn); } .stat.bad b { color: var(--bad); } .stat.busy b { color: var(--busy); }
+.sec { margin-top: 20px; }
+.sec > .label { display: block; margin-bottom: 8px; }
+.wt { display: flex; gap: 8px; align-items: center; padding: 7px 12px; border-radius: 10px; background: var(--surface-2); font-size: 13px; margin-top: 6px; }
+.wt code { font: 12px var(--font-mono); }
+.wt .n { margin-left: auto; font: 12px var(--font-mono); color: var(--warn); }
+.note { font-size: 13.5px; padding: 11px 14px; border-radius: 12px; background: color-mix(in oklab, var(--honey) 9%, var(--surface-2)); border: 1px solid color-mix(in oklab, var(--honey) 28%, transparent); margin-top: 6px; overflow-wrap: anywhere; }
+
+/* Motion: new rows slide in; view switches cross-fade (View Transitions) */
+.enter { animation: enter 0.5s var(--ease) both; }
+@keyframes enter { from { opacity: 0; transform: translateY(8px) scale(0.985); } }
+.stagger > * { animation: enter 0.55s var(--ease) both; }
+.stagger > *:nth-child(2) { animation-delay: 50ms; } .stagger > *:nth-child(3) { animation-delay: 100ms; } .stagger > *:nth-child(4) { animation-delay: 150ms; }
+.stagger > *:nth-child(5) { animation-delay: 200ms; } .stagger > *:nth-child(n+6) { animation-delay: 250ms; }
+::view-transition-old(root) { animation: vt-out 0.18s var(--ease) both; }
+::view-transition-new(root) { animation: vt-in 0.32s var(--ease) both; }
+@keyframes vt-out { to { opacity: 0; } }
+@keyframes vt-in { from { opacity: 0; transform: translateY(6px); } }
+/* Desktop widget (agentMon.exe): own title strip, pin / minimize / close, a resize grip */
+.app-only { display: none !important; }
+html.app .app-only { display: inline-flex !important; }
+html.app .topbar { user-select: none; background: color-mix(in oklab, var(--bg) 92%, transparent); border-bottom: 1px solid var(--line); cursor: default; }
+.app-name { align-items: center; gap: 7px; font: 700 13px var(--font-display); color: var(--fg); margin-right: 6px; }
+.app-name svg { width: 20px; height: 20px; }
+.chip { cursor: pointer; transition: border-color 0.2s; }
+.chip:hover { border-color: var(--line-hi); }
+.win-ctl { gap: 2px; margin-left: 4px; }
+.win-ctl button { width: 32px; height: 30px; border-radius: 9px; display: grid; place-items: center; color: var(--fg-3); transition: background 0.2s, color 0.2s; }
+.win-ctl button svg.ic { width: 17px; height: 17px; }
+.win-ctl button:hover { background: var(--surface-2); color: var(--fg); }
+.win-ctl button.close:hover { background: var(--bad); color: #fff; }
+.win-ctl button[aria-pressed="true"] { color: var(--honey); background: color-mix(in oklab, var(--honey) 16%, transparent); }
+.grip { position: fixed; right: 2px; bottom: 2px; z-index: 60; width: 16px; height: 16px; cursor: se-resize; opacity: 0.6;
+  background: linear-gradient(135deg, transparent 50%, var(--fg-3) 50%, var(--fg-3) 56%, transparent 56%, transparent 68%, var(--fg-3) 68%, var(--fg-3) 74%, transparent 74%); }
+/* Reacting to you and to changes */
+.row { overflow: hidden; }
+.row.focusable { cursor: pointer; }
+.row.focusable:hover { background: var(--surface-3); transform: translateY(-1px); }
+.row.pressed { transform: scale(0.985); transition-duration: 0.1s; }
+.row.just { animation: just 4.2s var(--ease) both; }
+.row.just.ready { --flash: var(--ready); } .row.just.busy { --flash: var(--busy); } .row.just.bad { --flash: var(--bad); }
+@keyframes just { 0% { box-shadow: inset 0 0 0 2px var(--flash, var(--honey)), 0 0 18px -4px var(--flash, var(--honey)); } 100% { box-shadow: inset 0 0 0 0 transparent, 0 0 0 0 transparent; } }
+.ripple { position: absolute; width: 10px; height: 10px; margin: -5px 0 0 -5px; border-radius: 50%; pointer-events: none;
+  background: color-mix(in oklab, var(--honey) 45%, transparent); animation: ripple 0.65s var(--ease) forwards; }
+@keyframes ripple { to { transform: scale(48); opacity: 0; } }
+.card.pick { overflow: hidden; }
+.toast { position: fixed; left: 50%; bottom: 84px; z-index: 120; display: flex; align-items: center; gap: 12px; padding: 10px 12px 10px 16px; border-radius: 14px;
+  background: var(--surface); border: 1px solid var(--line-hi); box-shadow: 0 18px 40px -14px rgba(0, 0, 0, 0.55); font-size: 13px; color: var(--fg);
+  transform: translate(-50%, 30px); opacity: 0; pointer-events: none; transition: transform 0.45s var(--spring), opacity 0.25s; max-width: calc(100vw - 32px); }
+.toast.show { transform: translate(-50%, 0); opacity: 1; pointer-events: auto; }
+.toast button { flex: none; height: 30px; padding: 0 12px; border-radius: 9px; background: var(--honey); color: var(--honey-ink); font-weight: 700; }
+@media (min-width: 821px) { .toast { bottom: 24px; } }
+
+/* Right-click menu (widget) */
+.ctx { position: fixed; z-index: 100; min-width: 230px; padding: 6px; border-radius: 16px; background: color-mix(in oklab, var(--surface) 96%, transparent);
+  border: 1px solid var(--line-hi); box-shadow: 0 18px 40px -14px rgba(0, 0, 0, 0.55); font-size: 13px; user-select: none; }
+.ctx.pop { animation: ctx-pop 0.22s var(--spring) both; transform-origin: top left; }
+@keyframes ctx-pop { from { opacity: 0; transform: scale(0.92) translateY(-4px); } }
+.ctx button { display: flex; align-items: center; gap: 10px; width: 100%; height: 32px; padding: 0 10px; border-radius: 10px; text-align: left; color: var(--fg); }
+.ctx button:hover { background: color-mix(in oklab, var(--honey) 16%, transparent); }
+.ctx button i { width: 12px; height: 12px; flex: none; }
+.ctx button i.chk { clip-path: var(--hexv); background: var(--line-hi); transition: background 0.2s; }
+.ctx button.on i.chk { background: var(--honey); }
+.ctx button small { margin-left: auto; font: 11px var(--font-mono); color: var(--fg-3); }
+.ctx hr { border: 0; border-top: 1px dashed var(--line-hi); margin: 5px 6px; }
+.ctx-h { font: 500 10px var(--font-mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--fg-3); padding: 4px 10px 2px; }
+
+/* Compact: a narrow widget window or a small browser window. The rail becomes a tab bar along the bottom. */
+@media (max-width: 820px) {
+  :root { --bar-h: 46px; }
+  .rail { top: auto; left: 8px; right: 8px; bottom: 8px; width: auto; height: 60px; flex-direction: row; justify-content: center; padding: 0 8px; border-radius: 20px; }
+  .brand { display: none; }
+  .nav { flex-direction: row; gap: 2px; }
+  .nav-glow { width: 60px; height: 52px; top: 0; }
+  .item { height: 52px; font-size: 10px; }
+  .rail-foot { margin: 0 0 0 6px; width: 40px; height: 40px; }
+  .topbar { left: 0; padding: 0 8px 0 12px; gap: 8px; }
+  .clock { font-size: 12.5px; }
+  .chip { height: 28px; font-size: 11.5px; padding: 0 10px 0 9px; }
+  .frame { margin-left: 0; padding: calc(var(--bar-h) + 10px) 12px 84px; }
+  .hero { height: 158px; border-radius: 20px; }
+  .hello { left: 16px; top: 14px; max-width: 50%; }
+  .hello h1 { font-size: 22px; }
+  .hello p { font-size: 12.5px; margin-top: 3px; }
+  .grid-home, .split { grid-template-columns: 1fr; gap: 14px; margin-top: 14px; }
+  .col { gap: 14px; }
+  .cards { grid-template-columns: 1fr; gap: 14px; margin-top: 14px; }
+  .picks { grid-template-columns: 1fr; }
+  .card { padding: 12px 13px 14px; border-radius: 18px; }
+  .card-h h2 { font-size: 15.5px; }
+  .row { padding: 10px 11px; gap: 10px; }
+  .said { -webkit-line-clamp: 2; font-size: 12.5px; }
+  .big { font-size: 32px; }
+  .head { margin: 10px 0 4px; } .head h1 { font-size: 24px; } .head p { font-size: 13px; }
+  .stats { grid-template-columns: 1fr 1fr; }
+  .detail { position: static; max-height: none; }
+  .dhead h2 { font-size: 21px; }
+  .av.lg { --s: 48px; }
+}
+@media (max-width: 420px) { .item { width: 54px; } .nav-glow { width: 54px; } .chip > span:last-child { display: none; } }
+
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
