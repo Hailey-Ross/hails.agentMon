@@ -150,6 +150,9 @@ pub struct Ticket {
     pub locks: Vec<String>,
     /// When a hold ends on its own (Unix ms; 0 = no end).
     pub expires: u64,
+    /// The agentmon-run process waiting for this ticket's turn (for a hold it differs from `pid`). A waiting
+    /// ticket whose waiter is gone is dropped, or nothing would ever admit it and it would block the line.
+    pub waiter: u32,
 }
 
 pub fn queue_dir() -> PathBuf {
@@ -167,8 +170,11 @@ pub fn read_tickets(alive: &HashMap<u32, &Proc>) -> Vec<Ticket> {
         let Some(v) = std::fs::read(&p).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok()) else { continue };
         let pid = v["pid"].as_u64().unwrap_or(0) as u32;
         let expires = v["expires"].as_u64().unwrap_or(0);
-        if !alive.contains_key(&pid) || (expires > 0 && now_ms() > expires) {
-            // Its runner or owner is gone (finished, killed, closed), or the hold ran out: the ticket goes too.
+        let waiter = v["waiter"].as_u64().unwrap_or(0) as u32;
+        let waiting = v["state"].as_str() != Some("running");
+        if !alive.contains_key(&pid) || (expires > 0 && now_ms() > expires) || (waiting && waiter != 0 && !alive.contains_key(&waiter)) {
+            // Its runner or owner is gone (finished, killed, closed), the hold ran out, or nobody waits for it
+            // any more: the ticket goes too.
             let _ = std::fs::remove_file(&p);
             continue;
         }
@@ -185,6 +191,7 @@ pub fn read_tickets(alive: &HashMap<u32, &Proc>) -> Vec<Ticket> {
             exclusive: v["exclusive"].as_bool().unwrap_or(false),
             locks: v["locks"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()).unwrap_or_default(),
             expires,
+            waiter,
         });
     }
     out.sort_by_key(|t| (t.created, t.pid));
@@ -195,7 +202,7 @@ pub fn read_tickets(alive: &HashMap<u32, &Proc>) -> Vec<Ticket> {
 pub fn write_ticket(t: &Ticket) {
     let v = json!({ "pid": t.pid, "created": t.created, "session": t.session, "cwd": t.cwd, "cmd": t.cmd,
         "state": if t.running { "running" } else { "waiting" }, "started": t.started,
-        "kind": t.kind, "exclusive": t.exclusive, "locks": t.locks, "expires": t.expires });
+        "kind": t.kind, "exclusive": t.exclusive, "locks": t.locks, "expires": t.expires, "waiter": t.waiter });
     let tmp = t.path.with_extension("tmp");
     if std::fs::write(&tmp, v.to_string()).is_ok() {
         let _ = std::fs::rename(&tmp, &t.path);

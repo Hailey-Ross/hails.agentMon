@@ -256,7 +256,7 @@ fn main() -> ExitCode {
         let mut t = Ticket {
             path: gate::queue_dir().join(format!("{created}-{owner}-hold.json")),
             pid: owner, created, session: o.session.clone(), cwd, cmd: "(reserved for a series of commands)".into(),
-            kind: "hold".into(), exclusive: o.exclusive, locks: o.locks.clone(), ..Default::default()
+            kind: "hold".into(), exclusive: o.exclusive, locks: o.locks.clone(), waiter: me, ..Default::default()
         };
         gate::write_ticket(&t);
         if !wait_turn(&mut t, &o) {
@@ -275,7 +275,7 @@ fn main() -> ExitCode {
         let mut t = Ticket {
             path: gate::queue_dir().join(format!("{created}-{me}.json")),
             pid: me, created, session: o.session.clone(), cwd, cmd: cmd.join(" "),
-            kind: mode.clone(), exclusive: o.exclusive, locks: o.locks.clone(), ..Default::default()
+            kind: mode.clone(), exclusive: o.exclusive, locks: o.locks.clone(), waiter: me, ..Default::default()
         };
         gate::write_ticket(&t);
         if !wait_turn(&mut t, &o) {

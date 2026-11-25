@@ -21,6 +21,7 @@ use windows_sys::Win32::System::Threading::{GetProcessTimes, OpenProcess, PROCES
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const SHELLS: [&str; 11] =
     ["cmd.exe", "powershell.exe", "pwsh.exe", "bash.exe", "sh.exe", "conhost.exe", "wscript.exe", "cscript.exe", "chcp.com", "openconsole.exe", "agentmon-run.exe"];
+const SCRIPT_HOSTS: [&str; 6] = ["powershell.exe", "pwsh.exe", "bash.exe", "sh.exe", "wscript.exe", "cscript.exe"];
 const NOT_WORK: [&str; 4] = ["agentmon.exe", "msedgewebview2.exe", "kitten-assistant.exe", "timeout.exe"];
 
 #[derive(Clone)]
@@ -87,6 +88,21 @@ pub fn cmdline(pid: u32) -> Option<String> {
 pub fn task_label(exe: &str, cmd: Option<&str>) -> String {
     let name = exe.trim_end_matches(".exe");
     let Some(cmd) = cmd else { return name.to_string() };
+    if SCRIPT_HOSTS.contains(&format!("{name}.exe").as_str()) {
+        // A script host: name the script it runs ("powershell push-at-1730.ps1"), or a Claude shell command.
+        const EXTS: [&str; 7] = [".ps1", ".sh", ".py", ".vbs", ".js", ".cmd", ".bat"];
+        let script = cmd.split(['"', ' ']).find(|w| EXTS.iter().any(|e| w.to_lowercase().ends_with(e)));
+        if let Some(s) = script {
+            return format!("{name} {}", s.rsplit(['\\', '/']).next().unwrap_or(s));
+        }
+        let encoded = cmd.split_whitespace().any(|w| {
+            let w = w.to_lowercase();
+            w.len() >= 2 && "-encodedcommand".starts_with(&w)
+        });
+        if encoded || cmd.contains("__claudeCodeScript") {
+            return format!("{name} command");
+        }
+    }
     let rest = cmd.trim_start();
     let rest = if let Some(r) = rest.strip_prefix('"') { r.split_once('"').map(|x| x.1).unwrap_or("") } else { rest.split_once(' ').map(|x| x.1).unwrap_or("") };
     let words: Vec<&str> = rest.split_whitespace().filter(|w| !w.starts_with('-') && !w.chars().all(|c| c.is_ascii_digit())).take(2).collect();
@@ -162,8 +178,13 @@ fn tasks(session_pid: u32, session_start: u64, kids: &HashMap<u32, Vec<&Proc>>, 
         }
         for c in kids.get(&id).map(|v| v.as_slice()).unwrap_or(&[]) {
             if SHELLS.contains(&c.exe.as_str()) {
-                queue.push(c.pid);
-                continue;
+                // A script host with nothing under it is running PowerShell / shell code itself (a sleep, a wait
+                // loop, a scheduled push): that is the task. Otherwise look through it.
+                let leaf = kids.get(&c.pid).is_none_or(|k| k.iter().all(|g| g.exe == "conhost.exe"));
+                if !(leaf && SCRIPT_HOSTS.contains(&c.exe.as_str())) {
+                    queue.push(c.pid);
+                    continue;
+                }
             }
             if NOT_WORK.contains(&c.exe.as_str()) {
                 continue;
@@ -502,5 +523,21 @@ impl Watcher {
         }
         self.last_sent = text.clone();
         Some(json!({ "t": now_ms(), "data": snapshot }).to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::task_label;
+
+    #[test]
+    fn script_hosts_are_named_by_their_script() {
+        let ps = r#""C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File C:\Temp\scratchpad\push-at-1730.ps1"#;
+        assert_eq!(task_label("powershell", Some(ps)), "powershell push-at-1730.ps1");
+        let claude = r#""powershell.exe" -NoProfile -NonInteractive -Command "$__claudeCodeScript = $env:X""#;
+        assert_eq!(task_label("powershell", Some(claude)), "powershell command");
+        assert_eq!(task_label("powershell", Some("powershell.exe -NoProfile -EncodedCommand dAByAGEAcAB7AGU")), "powershell command");
+        assert_eq!(task_label("pwsh", Some("pwsh -enc dAByAGEA")), "pwsh command");
+        assert_eq!(task_label("cargo", Some("cargo build --release -j 4 -p skate-game")), "cargo build skate-game");
     }
 }

@@ -276,7 +276,14 @@ fn main() {
                 "close" => Some(UserEvent::Close),
                 "pin:1" => Some(UserEvent::Pin(true)),
                 "pin:0" => Some(UserEvent::Pin(false)),
+                "resize:n" => Some(UserEvent::Resize(ResizeDirection::North)),
+                "resize:s" => Some(UserEvent::Resize(ResizeDirection::South)),
+                "resize:e" => Some(UserEvent::Resize(ResizeDirection::East)),
+                "resize:w" => Some(UserEvent::Resize(ResizeDirection::West)),
+                "resize:ne" => Some(UserEvent::Resize(ResizeDirection::NorthEast)),
+                "resize:nw" => Some(UserEvent::Resize(ResizeDirection::NorthWest)),
                 "resize:se" => Some(UserEvent::Resize(ResizeDirection::SouthEast)),
+                "resize:sw" => Some(UserEvent::Resize(ResizeDirection::SouthWest)),
                 "attention" => Some(UserEvent::Attention),
                 "update-check" => {
                     let _ = update_tx.send(());

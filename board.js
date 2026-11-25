@@ -255,6 +255,11 @@
   let times;
   try { times = JSON.parse(localStorage.getItem(TIMES_KEY)); } catch (e) { times = null; }
   if (!times || !times.task) times = { task: {}, turn: {}, open: {}, turnStart: {} };
+  if (!times.gate) times.gate = {};
+  if (!times.gateOpen) times.gateOpen = {};
+  // A gated command's history key: who (the gate session name) and its first two plain words.
+  const gateKey = (x) => String(x.session || '').toLowerCase() + '|' +
+    String(x.cmd || '').split(/\s+/).filter((w) => w && !w.startsWith('-') && !/[\\/:]/.test(w) && !/^\d/.test(w)).slice(0, 2).join(' ').toLowerCase();
   function fmt(sec) {
     sec = Math.max(0, Math.round(sec));
     if (sec < 60) return sec + ' s';
@@ -302,16 +307,31 @@
       }
     }
     for (const id of Object.keys(times.turnStart)) if (!st.running.some((s) => s.id === id)) { delete times.turnStart[id]; changed = true; }
+    // How long each command run through the gate takes (holds excluded: their length is the agent's choice).
+    if (st.gate) {
+      const live = new Set();
+      for (const j of st.gate.jobs) {
+        if (!j.gated || j.kind === 'hold' || !j.started) continue;
+        live.add(String(j.pid));
+        if (!times.gateOpen[j.pid]) { times.gateOpen[j.pid] = { key: gateKey(j), started: j.started }; changed = true; }
+      }
+      for (const [pid, o] of Object.entries(times.gateOpen)) {
+        if (live.has(pid)) continue;
+        const secs = (now - o.started) / 1000;
+        if (secs > 3 && secs < 6 * 3600) pushTime(times.gate, o.key, secs);
+        delete times.gateOpen[pid];
+        changed = true;
+      }
+    }
     if (changed) try { localStorage.setItem(TIMES_KEY, JSON.stringify(times)); } catch (e) { /* storage full or off */ }
   }
-  // Where an elapsed time stands against the typical one.
+  // An estimate from the usual time, while there is one. Past it, a long job is just a long job: no judgment,
+  // only the time it has run (the honey stays where it got to).
   function verdict(elapsed, typ) {
     if (!typ) return { kind: 'new', text: '', frac: null };
     const m = typ.median;
     if (elapsed < m) return { kind: 'on', text: `about ${fmt(m - elapsed)} left`, frac: elapsed / m };
-    if (elapsed <= Math.max(typ.slow * 1.25, m + 60)) return { kind: 'due', text: 'should finish any moment', frac: 1 };
-    if (elapsed > m * 3 && elapsed > 600) return { kind: 'very', text: `much longer than usual (usually ~${fmt(m)})`, frac: 1 };
-    return { kind: 'long', text: `running long (usually ~${fmt(m)})`, frac: 1 };
+    return { kind: 'over', text: '', frac: 1 };
   }
   // Timing and health of every open session: turn time, each task's time against its history, and
   // signs of being stuck (a task using no CPU for minutes, or a working session writing nothing at all).
@@ -342,13 +362,12 @@
       const activeTask = tasks.some((t) => t.quiet != null && t.quiet < 120);
       const waitingOnPurpose = !!(s.queued || s.pausedJob) || tasks.some((t) => !isCompute(t)) || st.kitten.some((k) => k.mood === 'waiting' && sessionKitten(st, s) === k);
       const silent = s.activity ? (now - s.activity) / 1000 : null;
-      const slowTask = tasks.find((t) => t.v && t.v.kind === 'very');
-      if (hung) s.health = { level: 'bad', stuck: true, why: `${hung.label} has used no CPU for ${fmt(hung.quiet)}` };
+      // Waiting in the build queue (or paused by it) is never stuck, however long the turn has run.
+      if (s.queued || s.pausedJob) s.health = { level: 'warn', stuck: false, why: s.queued ? 'waiting its turn in the build queue' : 'its build is paused until there is room' };
+      else if (hung) s.health = { level: 'bad', stuck: true, why: `${hung.label} has used no CPU for ${fmt(hung.quiet)}` };
       else if (s.status === 'busy' && silent != null && silent > 600 && !activeTask && !waitingOnPurpose) s.health = { level: 'bad', stuck: true, why: `nothing written for ${fmt(silent)}` };
-      else if (slowTask && !isCompute(slowTask)) s.health = { level: 'warn', stuck: false, why: `${slowTask.label}: ${slowTask.v.text}` };
-      else if (slowTask) s.health = { level: 'warn', stuck: true, why: `${slowTask.label}: ${slowTask.v.text}` };
-      else if (s.turnV && s.turnV.kind === 'very') s.health = { level: 'warn', stuck: true, why: `this turn: ${s.turnV.text}` };
-      else if (s.status === 'busy' && silent != null && silent > 300 && !activeTask) s.health = { level: 'warn', stuck: false, why: `quiet for ${fmt(silent)}` };
+      // How long something runs is never a health signal (long jobs are just long); only signs of life are.
+      else if (s.status === 'busy' && silent != null && silent > 300 && !activeTask && !waitingOnPurpose) s.health = { level: 'warn', stuck: false, why: `quiet for ${fmt(silent)}` };
       else if (s.st.key === 'asks' && s.waitFor > 600) s.health = { level: 'warn', stuck: false, why: `has been asking you for ${fmt(s.waitFor)}` };
     }
     for (const s of st.running) {
@@ -358,7 +377,7 @@
       } else stuckSeen.delete(s.id);
     }
   }
-  const etaBar = (v, label) => (v && v.frac != null
+  const etaBar = (v, label) => (v && v.kind === 'over' ? `<div class="eta over"><span>${esc(label)}</span></div>` : v && v.frac != null
     ? `<div class="eta ${v.kind}"><div class="meter"><span style="width:${Math.min(100, v.frac * 100).toFixed(0)}%"></span></div><span>${esc(label)}${v.text ? ' · ' + esc(v.text) : ''}</span></div>`
     : '');
 
@@ -518,7 +537,7 @@
     for (const [k, c] of Object.entries(hive.cells)) {
       const [x, y] = slotXY(k);
       const s = c.sid ? byId.get(c.sid) : null;
-      if (!s) { capped.push({ k, x, y, lvl: 0.58 + (seedOf(k) % 100) / 100 * 0.24 }); continue; }
+      if (!s) { capped.push({ k, x, y }); continue; }
       const fill = fillLevel(st, s);
       const nm = sessName(s);
       cells.push({
@@ -562,15 +581,15 @@
     c.globalAlpha = 0.62;
     for (const k of H.capped) {
       c.save(); c.translate(k.x, k.y);
-      c.fillStyle = honeyGradient(c, -R, R);
-      c.fill(new Path2D(hexBelow(R - 6, k.lvl)));
+      // A finished cell is full to the brim.
+      hexCtx(c, 0, 0, R - 3); c.fillStyle = honeyGradient(c, -R, R); c.fill();
       hexCtx(c, 0, 0, R - 4); c.strokeStyle = col.honey; c.lineWidth = 2.4; c.stroke();
       c.restore();
     }
     H.bg = off;
   }
   // One bee from its traits, facing `dir` (1 right, -1 left).
-  function drawBee(c, t, x, y, time, size, dir, droop) {
+  function drawBee(c, t, x, y, time, size, dir, droop, pollen) {
     const ink = '#2b1a00';
     c.save();
     c.translate(x, y);
@@ -597,7 +616,47 @@
     c.beginPath(); c.moveTo(rx + t.head * 0.4, -t.head * 0.8); c.quadraticCurveTo(rx + t.head * 0.4 + 2, -t.head * 0.8 - 4, rx + t.head * 0.4 + 4 + t.antenna * 0.4, -t.head * 0.8 - 4.5 + t.antenna * 0.3);
     c.lineWidth = 1; c.lineCap = 'round'; c.stroke();
     c.beginPath(); c.moveTo(-rx, 1); c.lineTo(-rx - 3, 1.6); c.lineWidth = 1.4; c.stroke();
+    // Pollen baskets on the hind legs.
+    if (pollen > 0.02) {
+      c.fillStyle = '#f39a0b'; c.lineWidth = 0.8;
+      for (const px of [-2.6, 1.8]) {
+        c.beginPath(); c.arc(px, ry + 1.2, 2.6 * pollen, 0, Math.PI * 2); c.fill(); c.stroke();
+      }
+    }
     c.restore();
+  }
+  // A worker bee (sub-agent) helps its session's bee: it rests in the cell, flies out to forage and comes back
+  // carrying pollen, each on its own rhythm. Returns a point in cell space at home, in hive space while away.
+  function workerAt(cell, st2, i, time) {
+    const ph2 = (st2.seed % 991) / 157.7, [bx, by, d] = beeAt(st2, time, ph2);
+    const hx = [-18, 18, 0, -9, 9][i % 5] + bx * 0.6, hy = [8, 6, 16, 20, 20][i % 5] + by * 0.5;
+    const P = 13 + (st2.seed % 900) / 100, u = (time + ((st2.seed >>> 3) % 977) / 977 * P) / P;
+    const n = Math.floor(u), k = u - n;
+    if (cell.stuck || k < 0.32) return { x: hx, y: hy, dir: d, pollen: 0, away: false };
+    if (k >= 0.84) return { x: hx, y: hy, dir: d, pollen: Math.max(0, 1 - (k - 0.84) / 0.1), away: false };
+    const r = rng((st2.seed ^ Math.imul(n + 1, 0x9e3779b1)) >>> 0);
+    const side = r() < 0.5 ? -1 : 1;
+    const ax = cell.x + hx, ay = cell.y + hy;
+    // Forage within the part of the banner that is on screen.
+    const left = Math.max(30, -map.ox / map.s + 24);
+    const tx = Math.max(left, Math.min(HW - 30, ax + side * (100 + r() * 90)));
+    const ty = Math.max(18, Math.min(HH - 18, ay - 70 + r() * 110));
+    const lift = 30 + r() * 30;
+    const bez = (s, x0, y0, x1, y1, bend) => {
+      const cx = (x0 + x1) / 2, cy = Math.min(y0, y1) - bend, m = 1 - s;
+      return [m * m * x0 + 2 * m * s * cx + s * s * x1, m * m * y0 + 2 * m * s * cy + s * s * y1];
+    };
+    const ease = (s) => s * s * (3 - 2 * s);
+    if (k < 0.5) {
+      const [x, y] = bez(ease((k - 0.32) / 0.18), ax, ay, tx, ty, lift);
+      return { x, y, dir: tx >= ax ? 1 : -1, pollen: 0, away: true };
+    }
+    if (k < 0.64) {
+      const s = (k - 0.5) / 0.14, env = Math.sin(Math.PI * s);
+      return { x: tx + bx * 0.5 * env, y: ty + by * 0.5 * env, dir: d, pollen: s, away: true };
+    }
+    const [x, y] = bez(ease((k - 0.64) / 0.2), tx, ty, ax, ay, lift * 0.6);
+    return { x, y, dir: ax >= tx ? 1 : -1, pollen: 1, away: true };
   }
   // Where a bee is around its home point: a mix of waves at its own rates (never repeating, never in step).
   function beeAt(t, time, ph) {
@@ -625,7 +684,9 @@
     if (cell.justUntil > now && since < 900) sc *= 1 + 0.1 * Math.sin(since / 900 * Math.PI);
     if (cell.key === 'asks') c.rotate(0.09 * Math.sin(time * 9) * Math.pow(Math.max(0, Math.sin(time * t.wobble * 0.7 + ph)), 12));
     c.scale(sc, sc);
-    const r = R - 4, rIn = R - 6, h = rIn * Math.sqrt(3) / 2;
+    // The honey reaches the comb's own wall (drawn at R - 3 in the background), so no gap shows at the edge,
+    // also where the wall under construction has gaps.
+    const r = R - 4, rIn = R - 3, h = rIn * Math.sqrt(3) / 2;
     // Liquid honey inside the hexagon: its level is the session's progress; it sloshes and its surface waves.
     c.save();
     hexCtx(c, 0, 0, rIn); c.clip();
@@ -664,8 +725,9 @@
       drawBee(c, t, bx, by - 10 + (cell.stuck ? 3 : 0), time, 1, d, cell.stuck);
     }
     cell.subs.forEach((st2, i) => {
-      const ph2 = (st2.seed % 991) / 157.7, [bx, by, d] = beeAt(st2, time, ph2);
-      drawBee(c, st2, [-18, 18, 0][i] + bx * 0.6, [8, 6, 16][i] + by * 0.5, time, 0.62, d, false);
+      const w = workerAt(cell, st2, i, time);
+      if (w.away) H.away.push([st2, w]);
+      else drawBee(c, st2, w.x, w.y, time, 0.62, w.dir, false, w.pollen);
     });
     c.restore();
   }
@@ -698,7 +760,10 @@
     c.clearRect(0, 0, cv.width, cv.height);
     c.drawImage(H.bg, 0, 0);
     c.setTransform(map.dpr * map.s, 0, 0, map.dpr * map.s, map.dpr * map.ox, map.dpr * map.oy);
+    H.away = [];
     for (const cell of H.cells) drawCell(c, cell, now, time);
+    // Foraging workers fly over every cell, so they are drawn after all of them.
+    for (const [st2, w] of H.away) drawBee(c, st2, w.x, w.y, time, 0.62, w.dir, false, w.pollen);
     drawFlights(c, now, time);
     // Frame budget: about 30 a second while bees work or fly, 20 when the widget is not focused, 10 when calm.
     const lively = H.cells.some((x) => x.key === 'busy' || x.subs.length) || H.flights.length || H.hover;
@@ -861,6 +926,22 @@
       return `<div class="head"><h1>Pull requests and CI</h1><p>Open PRs on your repos, your PRs upstream, and each repo's latest CI run. Checked every 10 minutes.</p></div>
         <div class="cards">${cards.join('') || card('none', '', 'Nothing open', null, '', '<div class="empty">No open PRs or CI runs found.</div>')}</div>`;
     },
+    queue(st) {
+      const p = gateParts(st);
+      const head = `<div class="head"><h1>Orchestration queue</h1><p>Heavy work from every agent (builds, tests, long runs) takes turns here, so nothing piles up on the machine.${app ? ' Click a row to bring that agent\'s window to the front.' : ''}</p></div>`;
+      if (!p) return head + card('none', '', 'The gate is starting', null, '', '<div class="empty">No queue data yet.</div>');
+      const howto = `<div class="rows mono-help">
+        <div class="sub"><b>agentmon-run -- &lt;command&gt;</b> · wait for a turn, then run it</div>
+        <div class="sub"><b>agentmon-run hold --for 45m</b> · keep one slot for a series, then <b>agentmon-run release</b></div>
+        <div class="sub"><b>agentmon-run batch -- "a" "b"</b> · several commands in one turn</div>
+        <div class="sub"><b>--exclusive</b> keeps the machine clear · <b>--lock auto</b> keeps jobs on one repo apart</div></div>`;
+      return head + `<div class="grid-home"><div class="col">
+          ${card('q-now', p.g.jobs.length ? 'busy' : '', 'Running now', p.g.jobs.length || null, '', p.gauges + p.now)}
+          ${card('q-how', '', 'How agents join', null, '', howto)}
+        </div><div class="col">
+          ${card('q-next', p.g.waiting.length ? 'warn' : '', 'Up next', p.g.waiting.length || null, '', '<div class="hint">In turn order. Start times come from how long the same command took before.</div>' + p.next)}
+        </div></div>`;
+    },
   };
 
   // Every other agent on the machine (Claude runs without a window, other agent tools) and background jobs.
@@ -881,10 +962,37 @@
       `<div class="rows">${agentRows.join('')}${jobRows.join('')}</div>`);
   }
 
-  // The build gate: machine gauges, what holds a slot, what waits for one.
-  function gateCard(st) {
+  // The usual length of a gated command (one earlier run is enough to go on), in seconds.
+  function gateTypical(x) {
+    const l = times.gate[gateKey(x)];
+    if (!l || !l.length) return null;
+    const a = l.slice().sort((p, q) => p - q);
+    return a[Math.floor(a.length / 2)];
+  }
+  // When each waiting entry should start: the running work's time left (a hold: until it runs out), then
+  // the usual length of everything ahead of it, spread over the free slots. null when part of it is unknown.
+  function queueEtas(g) {
+    const now = Date.now();
+    const free = [];
+    for (const j of g.jobs) {
+      if (j.paused || !j.gated) continue;
+      if (j.kind === 'hold') free.push(j.expires ? Math.max(0, (j.expires - now) / 1000) : null);
+      else { const t = gateTypical(j); free.push(t == null ? null : Math.max(30, t - (now - j.started) / 1000)); }
+    }
+    while (free.length < Math.max(1, g.slots)) free.push(0);
+    return g.waiting.map((w) => {
+      if (free.some((f) => f == null)) return null;
+      free.sort((a, b) => a - b);
+      const at = free[0];
+      const t = w.kind === 'hold' ? null : gateTypical(w);
+      free[0] = t == null ? null : at + t;
+      return at;
+    });
+  }
+  // The build gate: machine gauges, what holds a slot, what waits for one (with when it should start).
+  function gateParts(st) {
     const g = st.gate;
-    if (!g) return '';
+    if (!g) return null;
     const byId = new Map(st.sessions.map((s) => [s.id, s]));
     const who = (x) => { const s = x.sid && byId.get(x.sid); return s ? sessName(s) : x.session || x.exe || 'unknown'; };
     const proj = (x) => { const s = x.sid && byId.get(x.sid); return s ? s.project.name : ''; };
@@ -904,20 +1012,32 @@
         <div class="row-top"><b>${esc(who(j))}</b><span class="when">${secs != null ? esc(fmt(secs)) : ''}</span></div>
         <div class="sub mono-line">${esc(what)}</div><div class="tags">${tags}</div></div></div>`;
     };
+    const etas = queueEtas(g);
     const waitRow = (w, i) => {
       const pid = app && w.sid && byId.get(w.sid) ? byId.get(w.sid).pid : 0;
+      const eta = etas[i];
+      const when = eta == null ? (i ? `after ${i} ahead` : 'next') : eta < 45 ? 'starts any moment' : `starts in about ${fmt(eta)}`;
+      const what = w.kind === 'hold' ? 'a slot for a series of commands' : w.cmd;
+      const tags = [w.kind === 'hold' ? tag('busy', 'hold') : w.kind === 'batch' ? tag('good', 'batch') : '', w.exclusive ? tag('bad', 'exclusive') : '',
+        (w.locks || []).length ? tag('plain', 'lock: ' + w.locks.map((l) => l.split(/[\\/]/).pop()).join(', ')) : '', tag('plain', when)].join('');
       return `<div class="row warn${pid ? ' focusable' : ''}" data-key="w-${w.pid}"${pid ? ` data-pid="${pid}" data-hint="${esc(proj(w))}"` : ''}><span class="qpos">${i + 1}</span><div class="row-main">
         <div class="row-top"><b>${esc(who(w))}</b><span class="when">waiting ${esc(fmt((Date.now() - w.created) / 1000))}</span></div>
-        <div class="sub mono-line">${esc(w.cmd)}</div></div></div>`;
+        <div class="sub mono-line">${esc(what)}</div><div class="tags">${tags}</div></div></div>`;
     };
-    const body = `<div class="gauges">
+    const gauges = `<div class="gauges">
         ${gauge('CPU', g.cpu / 100, Math.round(g.cpu) + '%', cpuTone)}
         ${gauge('Memory', 1 - g.freeGb / Math.max(1, g.totalGb), g.freeGb.toFixed(1) + ' GB free', memTone)}
-        ${gauge('Slots', used / Math.max(1, g.slots), used + ' of ' + g.slots + ' in use', used >= g.slots ? 'warn' : '')}</div>
-      ${g.jobs.length ? `<div class="rows">${g.jobs.map(jobRow).join('')}</div>` : '<div class="empty">No heavy work running.</div>'}
-      ${g.waiting.length ? `<div class="label" style="margin:12px 0 6px">Waiting for a slot</div><div class="rows">${g.waiting.map(waitRow).join('')}</div>` : ''}`;
+        ${gauge('Slots', used / Math.max(1, g.slots), used + ' of ' + g.slots + ' in use', used >= g.slots ? 'warn' : '')}</div>`;
+    const now = g.jobs.length ? `<div class="rows">${g.jobs.map(jobRow).join('')}</div>` : '<div class="empty">No heavy work running.</div>';
+    const next = g.waiting.length ? `<div class="rows">${g.waiting.map(waitRow).join('')}</div>` : '<div class="empty">Nothing waiting.</div>';
     const tone = g.jobs.some((j) => j.paused) || g.waiting.length ? 'warn' : g.jobs.length ? 'busy' : '';
-    return card('gate', tone, 'Build queue', g.jobs.length + g.waiting.length || null, '', body);
+    return { g, gauges, now, next, tone };
+  }
+  function gateCard(st) {
+    const p = gateParts(st);
+    if (!p) return '';
+    const body = p.gauges + p.now + (p.g.waiting.length ? `<div class="label" style="margin:12px 0 6px">Up next</div>${p.next}` : '');
+    return card('gate', p.tone, 'Orchestration queue', p.g.jobs.length + p.g.waiting.length || null, '<a class="link" href="#queue">Open</a>', body);
   }
 
   function prRows(p) {
@@ -1054,6 +1174,8 @@
     const fails = st.needs.filter((n) => n.tone === 'bad' && n.url).length;
     const cp = $('c-prs');
     cp.hidden = !fails; cp.textContent = fails;
+    const cq = $('c-queue'), queued = st.gate ? st.gate.waiting.length : 0;
+    if (cq) { cq.hidden = !queued; cq.textContent = queued; }
     document.title = (st.asks.length ? '(?) ' : waiting ? `(${waiting}) ` : '') + 'agentMon';
   }
 
@@ -1158,6 +1280,10 @@
     $('w-min').addEventListener('click', () => post('min'));
     $('w-close').addEventListener('click', () => post('close'));
     $('grip').addEventListener('mousedown', (e) => { if (e.button === 0) { e.preventDefault(); post('resize:se'); } });
+    $('edges').addEventListener('mousedown', (e) => {
+      const d = e.target.dataset && e.target.dataset.d;
+      if (d && e.button === 0) { e.preventDefault(); e.stopPropagation(); post('resize:' + d); }
+    });
     $('topbar').addEventListener('mousedown', (e) => {
       if (e.button === 0 && !e.target.closest('button, a')) { e.preventDefault(); post('drag'); }
     });
