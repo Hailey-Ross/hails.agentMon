@@ -13,8 +13,9 @@
 //!          --wait-max MIN   give up after waiting this many minutes (exit 3)
 //!          --keep-going     (batch) run the rest after a failure
 //!
-//! While a session holds a slot, every agentmon-run from that same Claude Code session starts at once, inside
-//! the reservation, so a series of tests cannot lose its turn between steps. A hold ends with `release`, when
+//! While an agent holds a slot, every agentmon-run from the same Claude Code session with the same --session name
+//! starts at once, inside the reservation, so a series of tests cannot lose its turn between steps. Other agents of
+//! that session (sub-agents share its process) use their own names and wait their turn. A hold ends with `release`, when
 //! its time is up, or when the session closes. Waiting lines go to stderr; commands keep this console.
 #![allow(dead_code)]
 
@@ -210,7 +211,8 @@ fn main() -> ExitCode {
         }
         i += 1;
     }
-    if o.session.is_empty() {
+    let named = !o.session.is_empty();
+    if !named {
         o.session = std::path::Path::new(&cwd).file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
     }
     let _ = std::fs::create_dir_all(gate::queue_dir());
@@ -231,7 +233,8 @@ fn main() -> ExitCode {
             return ExitCode::SUCCESS;
         }
         "release" => {
-            let mine: Vec<&Ticket> = tickets.iter().filter(|t| t.kind == "hold" && t.pid == owner).collect();
+            // With a name: only that agent's hold. Without one: every hold of this Claude session, as before.
+            let mine: Vec<&Ticket> = tickets.iter().filter(|t| if named { gate::hold_covers(t, owner, &o.session) } else { t.kind == "hold" && t.pid == owner }).collect();
             for t in &mine {
                 let _ = std::fs::remove_file(&t.path);
             }
@@ -241,8 +244,13 @@ fn main() -> ExitCode {
         _ => {}
     }
 
-    // Inside this session's own reservation: start at once.
-    let held = tickets.iter().find(|t| t.kind == "hold" && t.running && t.pid == owner).cloned();
+    // Inside this agent's own reservation: start at once.
+    let held = tickets.iter().find(|t| t.running && gate::hold_covers(t, owner, &o.session)).cloned();
+    if held.is_none() && mode != "hold" {
+        if let Some(h) = tickets.iter().find(|t| t.kind == "hold" && t.running && t.pid == owner) {
+            eprintln!("agentmon-run: another agent of this Claude session holds a slot (\"{}\"); waiting for a turn. If that hold is yours, pass --session \"{}\"", h.session, h.session);
+        }
+    }
     if mode == "hold" {
         if let Some(h) = held {
             // Holding already: extend it.

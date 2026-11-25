@@ -354,6 +354,13 @@ pub fn admissible(me: &Ticket, tickets: &[Ticket], cfg: &Config, m: &Machine, cp
     room(cfg, m, cpu, jobs, last, now)
 }
 
+/// Whether hold `t` covers a command from `owner` run under `session`. Sub-agents run inside their parent's
+/// claude.exe, so the owner alone cannot tell two agents of one session apart: a hold taken with a session name
+/// covers only commands with that same name. A hold without a name covers everything its owner runs.
+pub fn hold_covers(t: &Ticket, owner: u32, session: &str) -> bool {
+    t.kind == "hold" && t.pid == owner && (t.session.is_empty() || t.session == session)
+}
+
 /// The process that owns a command run from `pid`: the nearest Claude Code session above it (so a hold covers
 /// everything that session runs), else the shell that started it.
 pub fn owner_of(pid: u32, procs: &[Proc]) -> u32 {
@@ -546,6 +553,21 @@ mod tests {
         let ex = t("ex", false, true, &[]);
         assert!(!admissible(&ex, &[t("x", true, false, &[])], &cfg(), &m, 20.0, 1, 0, now));
         assert!(admissible(&ex, &[], &cfg(), &m, 20.0, 0, 0, now));
+    }
+
+    #[test]
+    fn a_hold_covers_only_its_own_agent() {
+        let hold = |session: &str| Ticket { kind: "hold".into(), pid: 7, session: session.into(), ..Default::default() };
+        let named = hold("nativeMons speed");
+        assert!(hold_covers(&named, 7, "nativeMons speed"));
+        // Another agent of the same Claude session (same claude.exe) waits its turn.
+        assert!(!hold_covers(&named, 7, "nativeMons recompile"));
+        assert!(!hold_covers(&named, 7, ""));
+        assert!(!hold_covers(&named, 8, "nativeMons speed"));
+        // An unnamed hold covers its whole owner, as before.
+        assert!(hold_covers(&hold(""), 7, "anything"));
+        let run = Ticket { kind: "run".into(), pid: 7, ..Default::default() };
+        assert!(!hold_covers(&run, 7, ""));
     }
 
     #[test]
